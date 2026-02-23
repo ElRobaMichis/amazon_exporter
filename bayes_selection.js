@@ -543,8 +543,19 @@ function generatePreview() {
     // Count products without price for info message
     const productsWithoutPrice = filteredProducts.filter(p => !(parseFloat(p.price) > 0)).length;
 
-    // Sort by score descending
-    allProductsWithScore.sort((a, b) => parseFloat(b.score) - parseFloat(a.score));
+    // Sort by score descending, with tie-breaking by reviews and rating
+    allProductsWithScore.sort((a, b) => {
+      // Primary: score descending
+      const scoreDiff = parseFloat(b.score) - parseFloat(a.score);
+      if (scoreDiff !== 0) return scoreDiff;
+
+      // Secondary: reviews descending (more reviews = more trusted)
+      const reviewsDiff = b.reviews - a.reviews;
+      if (reviewsDiff !== 0) return reviewsDiff;
+
+      // Tertiary: rating descending
+      return b.rating - a.rating;
+    });
 
     // Apply pagination
     const totalCount = allProductsWithScore.length;
