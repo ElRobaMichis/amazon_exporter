@@ -1,32 +1,73 @@
 {
-    "manifest_version": 3,
-    "name": "Amazon Products Exporter",
-    "version": "1.0",
-    "description": "Exporta nombre, estrellas, reseñas, precio y bayescore de Amazon.",
-    "permissions": ["activeTab", "downloads", "scripting", "tabs", "storage", "notifications", "alarms"],
-    "icons": {
-      "48": "icon48.png"
-    },
-    "host_permissions": [
-      "*://*.amazon.com.mx/*",
-      "*://*.amazon.com/*",
-      "*://*.amazon.es/*"
-    ],
-    "background": {
-      "service_worker": "background.js"
-    },
-    "action": {
-      "default_popup": "popup.html"
-    },
-    "content_scripts": [
-      {
-        "matches": [
-          "*://*.amazon.com.mx/*",
-          "*://*.amazon.com/*",
-          "*://*.amazon.es/*"
-        ],
-        "js": ["utils/productExtractor.js", "content.js"]
-      }
-    ]
+  "manifest_version": 3,
+  "name": "Amazon BayesScore Finder",
+  "version": "1.0.0",
+  "description": "Find the best Amazon products using Bayesian Score analysis. Extracts multi-page results and ranks them objectively.",
+  "permissions": [
+    "activeTab",
+    "storage",
+    "scripting"
+  ],
+  "host_permissions": [
+    "*://*.amazon.com/*",
+    "*://*.amazon.co.uk/*",
+    "*://*.amazon.de/*",
+    "*://*.amazon.fr/*",
+    "*://*.amazon.it/*",
+    "*://*.amazon.es/*",
+    "*://*.amazon.co.jp/*",
+    "*://*.amazon.ca/*",
+    "*://*.amazon.com.mx/*",
+    "*://*.amazon.com.br/*",
+    "*://*.amazon.in/*",
+    "*://*.amazon.com.au/*",
+    "*://*.amazon.nl/*",
+    "*://*.amazon.sg/*",
+    "*://*.amazon.sa/*",
+    "*://*.amazon.ae/*",
+    "*://*.amazon.pl/*",
+    "*://*.amazon.se/*"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "*://*.amazon.com/s*",
+        "*://*.amazon.co.uk/s*",
+        "*://*.amazon.de/s*",
+        "*://*.amazon.fr/s*",
+        "*://*.amazon.it/s*",
+        "*://*.amazon.es/s*",
+        "*://*.amazon.co.jp/s*",
+        "*://*.amazon.ca/s*",
+        "*://*.amazon.com.mx/s*",
+        "*://*.amazon.com.br/s*",
+        "*://*.amazon.in/s*",
+        "*://*.amazon.com.au/s*",
+        "*://*.amazon.nl/s*",
+        "*://*.amazon.sg/s*",
+        "*://*.amazon.sa/s*",
+        "*://*.amazon.ae/s*",
+        "*://*.amazon.pl/s*",
+        "*://*.amazon.se/s*"
+      ],
+      "js": ["lib/parser.js", "content.js"],
+      "run_at": "document_idle"
+    }
+  ],
+  "action": {
+    "default_popup": "popup.html",
+    "default_icon": {
+      "16": "icons/icon16.png",
+      "48": "icons/icon48.png",
+      "128": "icons/icon128.png"
+    }
+  },
+  "icons": {
+    "16": "icons/icon16.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
   }
-  
+}

@@ -1,314 +1,288 @@
-// Configuration for page detection
-const PAGE_DETECTION_CONFIG = {
-  MAX_RETRIES: 3,
-  RETRY_DELAYS: [0, 500, 1000], // ms - exponential backoff
-  CONTENT_SCRIPT_TIMEOUT: 3000 // ms - time to wait for content script response
-};
+// ============================================================
+// Popup Script — Config panel logic
+// ============================================================
 
-// Initialize popup when DOM is loaded
 document.addEventListener('DOMContentLoaded', () => {
-  // Check if there's an active export and show progress
-  checkExportProgress();
+  const pagesSlider = document.getElementById('pages');
+  const pagesValue = document.getElementById('pages-value');
+  const multiQuery = document.getElementById('multiQuery');
+  const electronicsFilter = document.getElementById('electronicsFilter');
+  const filterSponsored = document.getElementById('filterSponsored');
+  const minPrice = document.getElementById('minPrice');
+  const maxPrice = document.getElementById('maxPrice');
+  const minReviews = document.getElementById('minReviews');
+  const extractBtn = document.getElementById('extractBtn');
+  const abortBtn = document.getElementById('abortBtn');
+  const statusText = document.getElementById('status-text');
+  const statusBar = document.getElementById('status');
+  const progressSection = document.getElementById('progress-section');
+  const progressBar = document.getElementById('progress-bar');
+  const progressText = document.getElementById('progress-text');
+  const resultsSection = document.getElementById('results-section');
+  const modeAuto = document.getElementById('modeAuto');
+  const modeManual = document.getElementById('modeManual');
+  const sliderContainer = document.getElementById('slider-container');
+  const detectedInfo = document.getElementById('detected-pages');
 
-  // Start page detection with retry mechanism
-  detectPagesWithRetry();
+  let isAutoMode = true;
+  let detectedPages = 0;
 
-  // Set up cancel button
-  document.getElementById('cancelExport').addEventListener('click', () => {
-    chrome.runtime.sendMessage({ action: 'cancelExport' }, response => {
-      if (response?.success) {
-        hideProgressSection();
-      }
-    });
-  });
-
-  // Set up manual retry button
-  document.getElementById('retryDetection').addEventListener('click', () => {
-    detectPagesWithRetry();
-  });
-});
-
-// Main detection function with retry logic
-async function detectPagesWithRetry() {
-  const pageCountHelp = document.getElementById('pageCountHelp');
-  const pageCountHelpText = document.getElementById('pageCountHelpText');
-  const pageCountIcon = document.getElementById('pageCountIcon');
-  const retryButton = document.getElementById('retryDetection');
-
-  // Hide retry button and show detecting status
-  retryButton.style.display = 'none';
-  pageCountHelpText.textContent = 'Detectando páginas...';
-  pageCountIcon.innerHTML = '&#8987;'; // Hourglass
-  pageCountHelp.classList.add('visible', 'detecting');
-  pageCountHelp.classList.remove('error');
-
-  for (let attempt = 0; attempt < PAGE_DETECTION_CONFIG.MAX_RETRIES; attempt++) {
-    // Wait for backoff delay (0ms on first attempt)
-    if (attempt > 0) {
-      pageCountHelpText.textContent = `Reintentando (${attempt + 1}/${PAGE_DETECTION_CONFIG.MAX_RETRIES})...`;
-      await sleep(PAGE_DETECTION_CONFIG.RETRY_DELAYS[attempt]);
-    }
-
+  // Auto-detect pages on popup open
+  async function detectPages() {
     try {
-      const result = await detectMaxPagesFromContent();
-
-      if (result.success && result.maxPages > 1) {
-        // Success! Update UI
-        updatePageCountUI(result.maxPages);
+      const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+      if (!tab || !tab.url || !tab.url.includes('amazon')) {
+        detectedInfo.innerHTML = '<strong>—</strong> (not on Amazon)';
         return;
       }
-
-      // If we got a response with maxPages = 1 on last attempt, it might be a single page
-      if (attempt === PAGE_DETECTION_CONFIG.MAX_RETRIES - 1) {
-        if (result.success && result.maxPages === 1) {
-          pageCountIcon.innerHTML = '&#10003;';
-          pageCountHelpText.textContent = 'Una página detectada';
-          pageCountHelp.classList.remove('detecting', 'error');
-          return;
-        }
+      // Inject scripts first to ensure content.js is loaded
+      try {
+        await chrome.scripting.executeScript({ target: { tabId: tab.id }, files: ['lib/parser.js'] });
+        await chrome.scripting.executeScript({ target: { tabId: tab.id }, files: ['content.js'] });
+        await new Promise(r => setTimeout(r, 200));
+      } catch (e) { /* may already be injected */ }
+      const response = await chrome.tabs.sendMessage(tab.id, { action: 'detectPages' });
+      if (response && response.pages > 0) {
+        detectedPages = response.pages;
+        detectedInfo.innerHTML = 'Detected: <strong>' + detectedPages + '</strong> pages';
+      } else {
+        detectedInfo.innerHTML = '<strong>—</strong> (no pagination)';
       }
-
-    } catch (error) {
-      console.error(`[Popup] Detection attempt ${attempt + 1} failed:`, error);
-
-      // On first failure, try to inject content script
-      if (attempt === 0 && error.message?.includes('not responding')) {
-        console.log('[Popup] Attempting to inject content script...');
-        await ensureContentScriptInjected();
-      }
+    } catch (e) {
+      detectedInfo.innerHTML = '<strong>—</strong>';
     }
   }
+  detectPages();
 
-  // All retries failed - show error and retry button
-  showDetectionError();
-}
-
-// Detect max pages (single attempt)
-function detectMaxPagesFromContent() {
-  return new Promise((resolve, reject) => {
-    chrome.tabs.query({ active: true, currentWindow: true }, tabs => {
-      const tabId = tabs[0]?.id;
-      if (!tabId) {
-        reject(new Error('No active tab found'));
-        return;
-      }
-
-      // Set timeout for content script response
-      const timeout = setTimeout(() => {
-        reject(new Error('Content script not responding'));
-      }, PAGE_DETECTION_CONFIG.CONTENT_SCRIPT_TIMEOUT);
-
-      chrome.tabs.sendMessage(tabId, { action: 'detectMaxPages' }, response => {
-        clearTimeout(timeout);
-
-        if (chrome.runtime.lastError) {
-          reject(new Error(`Content script error: ${chrome.runtime.lastError.message}`));
-          return;
-        }
-
-        if (!response || typeof response.maxPages !== 'number') {
-          reject(new Error('Invalid response from content script'));
-          return;
-        }
-
-        resolve({
-          success: true,
-          maxPages: response.maxPages
-        });
-      });
-    });
+  // Mode toggle
+  modeAuto.addEventListener('click', () => {
+    isAutoMode = true;
+    modeAuto.classList.add('active');
+    modeManual.classList.remove('active');
+    sliderContainer.classList.add('hidden');
+    updateEstimate();
   });
-}
 
-// Ensure content script is injected
-async function ensureContentScriptInjected() {
-  try {
-    const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
-    const tabId = tabs[0]?.id;
+  modeManual.addEventListener('click', () => {
+    isAutoMode = false;
+    modeManual.classList.add('active');
+    modeAuto.classList.remove('active');
+    sliderContainer.classList.remove('hidden');
+    updateEstimate();
+  });
 
-    if (!tabId) return;
+  function getPages() {
+    return isAutoMode ? (detectedPages || 1) : parseInt(pagesSlider.value);
+  }
 
-    // Inject content script programmatically
-    await chrome.scripting.executeScript({
-      target: { tabId },
-      files: ['utils/productExtractor.js', 'content.js']
+  function updateEstimate() {
+    const pages = getPages();
+    const queries = multiQuery.checked ? 5 : 1;
+    const totalPages = pages * queries;
+    statusText.textContent = `~${totalPages} pages → ~${totalPages * 16} products`;
+  }
+
+  // Load saved config
+  chrome.storage.local.get('config', ({ config }) => {
+    if (config) {
+      pagesSlider.value = config.pages || 5;
+      pagesValue.textContent = pagesSlider.value;
+      multiQuery.checked = config.multiQuery || false;
+      electronicsFilter.checked = config.electronicsFilter || false;
+      filterSponsored.checked = config.filterSponsored !== false;
+      minPrice.value = config.minPrice || 0;
+      maxPrice.value = config.maxPrice || 0;
+      minReviews.value = config.minReviews || 0;
+      if (config.autoMode === false) {
+        modeManual.click();
+      }
+    }
+  });
+
+  // Slider update
+  pagesSlider.addEventListener('input', () => {
+    pagesValue.textContent = pagesSlider.value;
+    updateEstimate();
+  });
+
+  multiQuery.addEventListener('change', () => {
+    updateEstimate();
+  });
+
+  // Save config on any change
+  function saveConfig() {
+    chrome.storage.local.set({
+      config: {
+        pages: parseInt(pagesSlider.value),
+        autoMode: isAutoMode,
+        multiQuery: multiQuery.checked,
+        electronicsFilter: electronicsFilter.checked,
+        filterSponsored: filterSponsored.checked,
+        minPrice: parseFloat(minPrice.value) || 0,
+        maxPrice: parseFloat(maxPrice.value) || 0,
+        minReviews: parseInt(minReviews.value) || 0
+      }
     });
-
-    console.log('[Popup] Content script injected successfully');
-    // Small delay to let script initialize
-    await sleep(100);
-  } catch (error) {
-    console.error('[Popup] Failed to inject content script:', error);
   }
-}
 
-// Update UI with detected page count
-function updatePageCountUI(maxPages) {
-  const pageCountInput = document.getElementById('pageCount');
-  const pageCountHelp = document.getElementById('pageCountHelp');
-  const pageCountHelpText = document.getElementById('pageCountHelpText');
-  const pageCountIcon = document.getElementById('pageCountIcon');
+  [pagesSlider, multiQuery, electronicsFilter, filterSponsored, minPrice, maxPrice, minReviews]
+    .forEach(el => el.addEventListener('change', saveConfig));
 
-  pageCountInput.value = maxPages;
-  pageCountInput.max = maxPages;
+  // Extract button
+  extractBtn.addEventListener('click', async () => {
+    saveConfig();
 
-  pageCountIcon.innerHTML = '&#10003;';
-  pageCountHelpText.textContent = `Se detectaron ${maxPages} páginas disponibles`;
-  pageCountHelp.classList.add('visible');
-  pageCountHelp.classList.remove('error', 'detecting');
-}
-
-// Show detection error with retry button
-function showDetectionError() {
-  const pageCountHelp = document.getElementById('pageCountHelp');
-  const pageCountHelpText = document.getElementById('pageCountHelpText');
-  const pageCountIcon = document.getElementById('pageCountIcon');
-  const retryButton = document.getElementById('retryDetection');
-
-  pageCountIcon.innerHTML = '';
-  pageCountHelpText.textContent = 'No se pudo detectar';
-  pageCountHelp.classList.add('visible', 'error');
-  pageCountHelp.classList.remove('detecting');
-  retryButton.style.display = 'inline-flex';
-}
-
-// Utility: sleep function
-function sleep(ms) {
-  return new Promise(resolve => setTimeout(resolve, ms));
-}
-
-document.getElementById('csv').addEventListener('click', () => exportData('csv'));
-document.getElementById('json').addEventListener('click', () => exportData('json'));
-document.getElementById('exportPages').addEventListener('click', () => {
-  console.log('[Popup] Export pages button clicked');
-  
-  const pageCountInput = document.getElementById('pageCount');
-  let count = parseInt(pageCountInput.value, 10);
-  const max = parseInt(pageCountInput.max, 10);
-  
-  // Ensure count doesn't exceed max if max is set
-  if (max && count > max) {
-    count = max;
-    pageCountInput.value = max;
-  }
-  
-  console.log(`[Popup] Page count: ${count}`);
-  
-  const message = { action: 'startCrawl', pages: count };
-  console.log('[Popup] Sending message to background:', message);
-  
-  chrome.runtime.sendMessage(message, resp => {
-    console.log('[Popup] Received response from background:', resp);
-    
-    if (chrome.runtime.lastError) {
-      console.error('[Popup] Runtime error:', chrome.runtime.lastError);
-      alert('Error: Background script not responding. Try reloading the extension.');
+    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+    if (!tab || !tab.url || !tab.url.includes('amazon')) {
+      setStatus('Navigate to an Amazon search page first', 'error');
       return;
     }
-    
-    if (resp && resp.error) {
-      console.error('[Popup] Background error:', resp.error);
-      alert(`Error: ${resp.error}`);
-    } else if (resp && resp.success) {
-      console.log('[Popup] Crawl started successfully');
-      // Show progress section and hide export section
-      showProgressSection();
-      startProgressListener();
-      // Don't close popup, keep it open to show progress
-    }
-  });
-});
 
-function exportData(format) {
-  chrome.tabs.query({ active: true, currentWindow: true }, tabs => {
-    const tabId = tabs[0]?.id;
-    if (!tabId) return alert('No active tab found.');
+    setExtracting(true);
 
-    chrome.tabs.sendMessage(tabId, { action: 'export' }, response => {
-      if (chrome.runtime.lastError) {
-        return alert('Error contacting content script.');
-      }
-      const products = response?.products || [];
-      if (!products.length) return alert('No hay productos.');
+    const extractOptions = {
+      pages: getPages(),
+      multiQuery: multiQuery.checked,
+      electronicsFilter: electronicsFilter.checked,
+      filterSponsored: filterSponsored.checked,
+      minReviews: parseInt(minReviews.value) || 0,
+      minPrice: parseFloat(minPrice.value) || 0,
+      maxPrice: parseFloat(maxPrice.value) || 0
+    };
 
-      bayesUtils.addBayesScore(products);
-
-      // 1) Generamos contenido
-      let content, filename;
-
-      if (format === 'json') {
-        content  = JSON.stringify(products, null, 2);
-        filename = 'amazon_products.json';
-      } else { // CSV format
-        content  = csvUtils.toCsv(products);
-        filename = 'amazon_products.csv';
-      }
-
-      // 2) Disparamos la descarga (Refactored download logic)
-      const blob = new Blob([content], { type: format==='json'
-        ? 'application/json;charset=utf-8'
-        : 'text/csv;charset=utf-8'
+    // Always inject scripts first (idempotent — safe to re-inject)
+    try {
+      await chrome.scripting.executeScript({
+        target: { tabId: tab.id },
+        files: ['lib/parser.js']
       });
-      downloadUtils.downloadBlob(blob, filename);
+      await chrome.scripting.executeScript({
+        target: { tabId: tab.id },
+        files: ['content.js']
+      });
+      // Small delay to let scripts initialize
+      await new Promise(r => setTimeout(r, 300));
+      await chrome.tabs.sendMessage(tab.id, { action: 'triggerExtract', options: extractOptions });
+    } catch (e) {
+      setExtracting(false);
+      setStatus('Error: ' + e.message, 'error');
+    }
+  });
+
+  // Abort button
+  abortBtn.addEventListener('click', () => {
+    chrome.runtime.sendMessage({ action: 'abort' });
+    setExtracting(false);
+    setStatus('Extraction aborted', 'error');
+  });
+
+  // Listen for progress and results
+  chrome.runtime.onMessage.addListener((msg) => {
+    if (msg.action === 'progress') {
+      updateProgress(msg.progress);
+    } else if (msg.action === 'extractionComplete') {
+      setExtracting(false);
+      showResults(msg.data);
+    }
+  });
+
+  // Check for existing results
+  chrome.runtime.sendMessage({ action: 'getResults' }, (response) => {
+    if (response && response.scored && response.scored.length > 0) {
+      showResults(response);
+    }
+  });
+
+  // Check if extraction is running
+  chrome.runtime.sendMessage({ action: 'getState' }, (state) => {
+    if (state && state.running) {
+      setExtracting(true);
+      updateProgress(state.progress);
+    }
+  });
+
+  // Export buttons
+  document.getElementById('exportCSV').addEventListener('click', async () => {
+    const response = await chrome.runtime.sendMessage({ action: 'exportCSV' });
+    downloadFile(response.csv, 'bayesscore.csv', 'text/csv');
+  });
+
+  document.getElementById('exportJSON').addEventListener('click', async () => {
+    const response = await chrome.runtime.sendMessage({ action: 'exportJSON' });
+    downloadFile(response.json, 'bayesscore.json', 'application/json');
+  });
+
+  document.getElementById('showPanel').addEventListener('click', () => {
+    chrome.tabs.create({ url: chrome.runtime.getURL('results.html') });
+    window.close();
+  });
+
+  // ---- Helpers ----
+  function setStatus(text, type = '') {
+    statusText.textContent = text;
+    statusBar.className = 'status-bar' + (type ? ' ' + type : '');
+  }
+
+  function setExtracting(running) {
+    extractBtn.classList.toggle('hidden', running);
+    abortBtn.classList.toggle('hidden', !running);
+    progressSection.classList.toggle('hidden', !running);
+    if (running) {
+      setStatus('Extracting...', 'extracting');
+    }
+  }
+
+  function updateProgress(progress) {
+    const pct = progress.total > 0 ? (progress.completed / progress.total) * 100 : 0;
+    progressBar.style.width = pct + '%';
+    progressText.textContent = `${progress.completed}/${progress.total} pages • ${progress.newProducts} unique products`;
+  }
+
+  function showResults(data) {
+    if (!data || !data.scored) return;
+
+    resultsSection.classList.remove('hidden');
+    setStatus(`${data.scored.length} products ranked`, 'done');
+
+    document.getElementById('res-products').textContent = data.scored.length;
+    document.getElementById('res-pages').textContent = data.stats?.pagesSucceeded || '—';
+    document.getElementById('res-time').textContent = data.stats ? (data.stats.elapsedMs / 1000).toFixed(1) + 's' : '—';
+    document.getElementById('res-best').textContent = data.summary ? data.summary.maxScore.toFixed(2) : '—';
+
+    // Top 5
+    const top5 = document.getElementById('top5');
+    top5.innerHTML = '';
+    data.scored.slice(0, 5).forEach((p, i) => {
+      const item = document.createElement('div');
+      item.className = 'top5-item';
+      item.innerHTML = `
+        <div class="top5-rank r${i + 1}">${i + 1}</div>
+        <div class="top5-title" title="${escapeAttr(p.title)}">${escapeHtml(p.title)}</div>
+        <div class="top5-score">${p.bayesScore.toFixed(2)}</div>
+      `;
+      top5.appendChild(item);
     });
-  });
-}
+  }
 
-// Progress management functions
-function showProgressSection() {
-  document.getElementById('progressSection').style.display = 'block';
-  document.getElementById('exportSection').style.display = 'none';
-  document.getElementById('multiPageSection').style.display = 'none';
-}
+  function downloadFile(content, filename, mimeType) {
+    const blob = new Blob([content], { type: mimeType });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+  }
 
-function hideProgressSection() {
-  document.getElementById('progressSection').style.display = 'none';
-  document.getElementById('exportSection').style.display = 'block';
-  document.getElementById('multiPageSection').style.display = 'block';
-}
+  function escapeHtml(str) {
+    const div = document.createElement('div');
+    div.textContent = str || '';
+    return div.innerHTML;
+  }
 
-function updateProgressUI(data) {
-  const { currentPage, totalPages, totalProducts } = data;
-
-  // Update progress text
-  document.getElementById('progressText').textContent =
-    `Página ${currentPage}/${totalPages} - ${totalProducts} productos`;
-
-  // Update progress bar
-  const progressPercent = totalPages > 0 ? (currentPage / totalPages) * 100 : 0;
-  document.getElementById('progressFill').style.width = `${progressPercent}%`;
-
-  // Update stats
-  document.getElementById('progressPages').textContent = `${currentPage}/${totalPages} páginas`;
-  document.getElementById('progressProducts').textContent = `${totalProducts} productos`;
-}
-
-function checkExportProgress() {
-  chrome.storage.local.get(['exportProgress'], result => {
-    if (result.exportProgress) {
-      const progress = result.exportProgress;
-      // If there's active progress, show it
-      if (progress.currentPage > 0 && progress.currentPage < progress.totalPages) {
-        showProgressSection();
-        updateProgressUI(progress);
-        
-        // Start listening for progress updates
-        startProgressListener();
-      }
-    }
-  });
-}
-
-function startProgressListener() {
-  // Listen for progress updates from background script
-  chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
-    if (message.action === 'progressUpdate') {
-      updateProgressUI(message.data);
-    } else if (message.action === 'exportComplete') {
-      hideProgressSection();
-    } else if (message.action === 'exportError') {
-      hideProgressSection();
-      alert(`Error durante la extracción: ${message.error}`);
-    }
-  });
-}
+  function escapeAttr(str) {
+    return (str || '').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+  }
+});
