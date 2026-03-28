@@ -6,7 +6,7 @@ document.addEventListener('DOMContentLoaded', () => {
   const pagesSlider = document.getElementById('pages');
   const pagesValue = document.getElementById('pages-value');
   const multiQuery = document.getElementById('multiQuery');
-  const electronicsFilter = document.getElementById('electronicsFilter');
+  const depthAnalysis = document.getElementById('depthAnalysis');
   const filterSponsored = document.getElementById('filterSponsored');
   const minPrice = document.getElementById('minPrice');
   const maxPrice = document.getElementById('maxPrice');
@@ -18,6 +18,7 @@ document.addEventListener('DOMContentLoaded', () => {
   const progressSection = document.getElementById('progress-section');
   const progressBar = document.getElementById('progress-bar');
   const progressText = document.getElementById('progress-text');
+  const progressPct = document.getElementById('progress-pct');
   const resultsSection = document.getElementById('results-section');
   const modeAuto = document.getElementById('modeAuto');
   const modeManual = document.getElementById('modeManual');
@@ -76,10 +77,14 @@ document.addEventListener('DOMContentLoaded', () => {
   }
 
   function updateEstimate() {
+    if (depthAnalysis.checked) {
+      statusText.textContent = 'Depth analysis \u00b7 categories auto-discovered';
+      return;
+    }
     const pages = getPages();
     const queries = multiQuery.checked ? 5 : 1;
     const totalPages = pages * queries;
-    statusText.textContent = `~${totalPages} pages → ~${totalPages * 16} products`;
+    statusText.textContent = `~${totalPages} pages \u2192 ~${totalPages * 16} products`;
   }
 
   // Load saved config
@@ -88,7 +93,7 @@ document.addEventListener('DOMContentLoaded', () => {
       pagesSlider.value = config.pages || 5;
       pagesValue.textContent = pagesSlider.value;
       multiQuery.checked = config.multiQuery || false;
-      electronicsFilter.checked = config.electronicsFilter || false;
+      depthAnalysis.checked = config.depthAnalysis || false;
       filterSponsored.checked = config.filterSponsored !== false;
       minPrice.value = config.minPrice || 0;
       maxPrice.value = config.maxPrice || 0;
@@ -109,6 +114,10 @@ document.addEventListener('DOMContentLoaded', () => {
     updateEstimate();
   });
 
+  depthAnalysis.addEventListener('change', () => {
+    updateEstimate();
+  });
+
   // Save config on any change
   function saveConfig() {
     chrome.storage.local.set({
@@ -116,7 +125,7 @@ document.addEventListener('DOMContentLoaded', () => {
         pages: parseInt(pagesSlider.value),
         autoMode: isAutoMode,
         multiQuery: multiQuery.checked,
-        electronicsFilter: electronicsFilter.checked,
+        depthAnalysis: depthAnalysis.checked,
         filterSponsored: filterSponsored.checked,
         minPrice: parseFloat(minPrice.value) || 0,
         maxPrice: parseFloat(maxPrice.value) || 0,
@@ -125,7 +134,7 @@ document.addEventListener('DOMContentLoaded', () => {
     });
   }
 
-  [pagesSlider, multiQuery, electronicsFilter, filterSponsored, minPrice, maxPrice, minReviews]
+  [pagesSlider, multiQuery, depthAnalysis, filterSponsored, minPrice, maxPrice, minReviews]
     .forEach(el => el.addEventListener('change', saveConfig));
 
   // Extract button
@@ -142,8 +151,9 @@ document.addEventListener('DOMContentLoaded', () => {
 
     const extractOptions = {
       pages: getPages(),
+      isAutoMode: isAutoMode,
       multiQuery: multiQuery.checked,
-      electronicsFilter: electronicsFilter.checked,
+      depthAnalysis: depthAnalysis.checked,
       filterSponsored: filterSponsored.checked,
       minReviews: parseInt(minReviews.value) || 0,
       minPrice: parseFloat(minPrice.value) || 0,
@@ -220,7 +230,7 @@ document.addEventListener('DOMContentLoaded', () => {
   // ---- Helpers ----
   function setStatus(text, type = '') {
     statusText.textContent = text;
-    statusBar.className = 'status-bar' + (type ? ' ' + type : '');
+    statusBar.className = 'status-indicator' + (type ? ' ' + type : '');
   }
 
   function setExtracting(running) {
@@ -233,9 +243,22 @@ document.addEventListener('DOMContentLoaded', () => {
   }
 
   function updateProgress(progress) {
+    if (progress.phase === 'discovery') {
+      progressBar.style.width = '0%';
+      progressText.textContent = `Analyzing products... (${progress.completed}/${progress.total})`;
+      progressPct.textContent = '';
+      return;
+    }
+    if (progress.phase === 'detection') {
+      progressBar.style.width = '0%';
+      progressText.textContent = `Found ${progress.categories} categories, preparing...`;
+      progressPct.textContent = '';
+      return;
+    }
     const pct = progress.total > 0 ? (progress.completed / progress.total) * 100 : 0;
     progressBar.style.width = pct + '%';
-    progressText.textContent = `${progress.completed}/${progress.total} pages • ${progress.newProducts} unique products`;
+    progressText.textContent = `${progress.completed}/${progress.total} pages \u00b7 ${progress.newProducts} unique products`;
+    progressPct.textContent = Math.round(pct) + '%';
   }
 
   function showResults(data) {

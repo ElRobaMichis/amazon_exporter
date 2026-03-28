@@ -22,7 +22,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       return false;
 
     case 'openResults':
-      chrome.tabs.create({ url: chrome.runtime.getURL('results.html') });
+      chrome.tabs.create({ url: chrome.runtime.getURL('results.html') + (msg.resultId ? '?id=' + msg.resultId : '') });
       sendResponse({ ok: true });
       return false;
 

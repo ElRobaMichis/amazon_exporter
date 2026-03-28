@@ -6,7 +6,7 @@
   var abortController = null;
 
   var SORT_ORDERS = ['', '&s=review-rank', '&s=price-asc-rank', '&s=price-desc-rank', '&s=date-desc-rank'];
-  var ELECTRONICS_FILTER = '&rh=n%3A172282';
+  var DEPTH_SAMPLE_SIZE = 10;
 
   chrome.runtime.onMessage.addListener(function(msg, sender, sendResponse) {
     if (msg.action === 'triggerExtract') startExtraction(msg.options || {});
@@ -31,45 +31,40 @@
 
     var pages = options.pages || 5;
     var multiQuery = options.multiQuery || false;
-    var electronicsFilter = options.electronicsFilter || false;
+    var depthAnalysis = options.depthAnalysis || false;
+    var isAutoMode = options.isAutoMode !== false;
     var filterSponsored = options.filterSponsored !== false;
     var minReviews = options.minReviews || 0;
     var minPrice = options.minPrice || 0;
     var maxPrice = options.maxPrice || 0;
 
     var baseUrl = window.location.href.split('&page=')[0].split('?page=')[0];
-    if (electronicsFilter && baseUrl.indexOf('rh=n') === -1) {
-      baseUrl += (baseUrl.indexOf('?') !== -1 ? '&' : '?') + ELECTRONICS_FILTER.substring(1);
-    }
+    var hostname = window.location.hostname;
+    var origin = window.location.origin;
 
     var sortOrders = multiQuery ? SORT_ORDERS : [''];
     var allProducts = new Map();
     var pagesCompleted = 0;
-    var totalPages = pages * sortOrders.length;
-
-    broadcast({ completed: 0, total: totalPages, newProducts: 0 });
-
-    var tasks = [];
-    for (var si = 0; si < sortOrders.length; si++) {
-      for (var page = 1; page <= pages; page++) {
-        var sep = baseUrl.indexOf('?') !== -1 ? '&' : '?';
-        tasks.push(baseUrl + sep + 'page=' + page + sortOrders[si]);
-      }
-    }
+    var totalPages = 0;
 
     var startTime = Date.now();
-    var BATCH_SIZE = 120;
-    var BATCH_DELAY = 30; // ms between batches
+    var BATCH_SIZE = 10;
+    var BATCH_DELAY = 300;
+    var consecutiveFailures = 0;
     var MAX_RETRIES = 1;
     var succeeded = 0;
     var failed = 0;
     var captchaHit = false;
 
-    // --- Fetch a single page with retry ---
-    async function fetchPage(pageUrl, retries) {
-      if (abortController.signal.aborted || captchaHit) return false;
+    function delay(ms) {
+      return new Promise(function(resolve) { setTimeout(resolve, ms); });
+    }
+
+    // --- Fetch raw HTML with retry ---
+    async function fetchHtml(url, retries) {
+      if (abortController.signal.aborted || captchaHit) return null;
       try {
-        var r = await fetch(pageUrl, {
+        var r = await fetch(url, {
           signal: abortController.signal,
           credentials: 'include',
           headers: { 'Accept': 'text/html', 'Accept-Language': 'en-US,en;q=0.9,es;q=0.8' }
@@ -79,49 +74,190 @@
         if (html.length < 5000 && html.indexOf('Type the characters') !== -1) {
           captchaHit = true;
           console.warn('[BayesScore] CAPTCHA detected! Stopping further requests.');
-          return false;
+          return null;
         }
-        var products = globalThis.BayesParser.parseProducts(html, window.location.hostname);
-        var nc = 0;
-        products.forEach(function(p) {
-          if (!allProducts.has(p.asin)) { allProducts.set(p.asin, p); nc++; }
-        });
-        pagesCompleted++;
-        succeeded++;
-        broadcast({ completed: pagesCompleted, total: totalPages, newProducts: allProducts.size });
-        return true;
+        return html;
       } catch (e) {
         if (retries > 0 && !captchaHit && !abortController.signal.aborted) {
           await delay(200 + Math.random() * 300);
-          return fetchPage(pageUrl, retries - 1);
+          return fetchHtml(url, retries - 1);
         }
-        pagesCompleted++;
-        failed++;
-        broadcast({ completed: pagesCompleted, total: totalPages, newProducts: allProducts.size });
-        return false;
+        return null;
       }
     }
 
-    function delay(ms) {
-      return new Promise(function(resolve) { setTimeout(resolve, ms); });
+    // --- Fetch and parse a search page, collecting products ---
+    async function fetchSearchPage(pageUrl, retries) {
+      var html = await fetchHtml(pageUrl, retries);
+      if (!html) {
+        pagesCompleted++;
+        failed++;
+        consecutiveFailures++;
+        broadcast({ completed: pagesCompleted, total: totalPages, newProducts: allProducts.size });
+        return false;
+      }
+      var products = globalThis.BayesParser.parseProducts(html, hostname);
+      products.forEach(function(p) {
+        if (!allProducts.has(p.asin)) allProducts.set(p.asin, p);
+      });
+      pagesCompleted++;
+      succeeded++;
+      consecutiveFailures = 0;
+      broadcast({ completed: pagesCompleted, total: totalPages, newProducts: allProducts.size });
+      return true;
     }
 
-    // --- Process in batches ---
+    // ===================== DEPTH ANALYSIS =====================
+    var tasks = [];
+
+    if (depthAnalysis) {
+      // --- Phase 1: Discovery — sample products to find categories ---
+      broadcast({ phase: 'discovery', completed: 0, total: DEPTH_SAMPLE_SIZE });
+
+      var firstPageHtml = await fetchHtml(baseUrl, MAX_RETRIES);
+      if (!firstPageHtml || captchaHit || abortController.signal.aborted) {
+        console.warn('[BayesScore] Depth Analysis: failed to fetch first page, falling back to normal extraction.');
+        depthAnalysis = false;
+      }
+
+      var categories = [];
+
+      if (depthAnalysis) {
+        var firstPageProducts = globalThis.BayesParser.parseProducts(firstPageHtml, hostname);
+        // Also add these products to our collection
+        firstPageProducts.forEach(function(p) {
+          if (!allProducts.has(p.asin)) allProducts.set(p.asin, p);
+        });
+
+        // Take first N non-sponsored ASINs
+        var sampleAsins = [];
+        for (var i = 0; i < firstPageProducts.length && sampleAsins.length < DEPTH_SAMPLE_SIZE; i++) {
+          if (!firstPageProducts[i].isSponsored) {
+            sampleAsins.push(firstPageProducts[i].asin);
+          }
+        }
+
+        console.log('[BayesScore] Depth Analysis: sampling', sampleAsins.length, 'products for category discovery');
+
+        // Fetch product pages in small batches to avoid rate limiting
+        var categoryMap = {}; // nodeId → { nodeId, name }
+        var discoveryDone = 0;
+        var DISCOVERY_BATCH = 3;
+
+        for (var di = 0; di < sampleAsins.length; di += DISCOVERY_BATCH) {
+          if (abortController.signal.aborted || captchaHit) break;
+          var dBatch = sampleAsins.slice(di, di + DISCOVERY_BATCH);
+          await Promise.all(dBatch.map(async function(asin) {
+            var productUrl = origin + '/dp/' + asin;
+            var html = await fetchHtml(productUrl, MAX_RETRIES);
+            discoveryDone++;
+            broadcast({ phase: 'discovery', completed: discoveryDone, total: sampleAsins.length });
+
+            if (html) {
+              var nodes = globalThis.BayesParser.parseCategoryNodes(html);
+              if (nodes.length > 0) {
+                var leaf = nodes[nodes.length - 1]; // last = most specific
+                if (!categoryMap[leaf.nodeId]) {
+                  categoryMap[leaf.nodeId] = leaf;
+                }
+              }
+            }
+          }));
+          if (di + DISCOVERY_BATCH < sampleAsins.length && !captchaHit) {
+            await delay(300);
+          }
+        }
+
+        categories = Object.keys(categoryMap).map(function(k) { return categoryMap[k]; });
+        console.log('[BayesScore] Depth Analysis: discovered', categories.length, 'categories:', categories.map(function(c) { return c.name + ' (' + c.nodeId + ')'; }).join(', '));
+      }
+
+      // --- Phase 2: Detection — detect max pages per category (auto mode) ---
+      if (depthAnalysis && categories.length > 0) {
+        broadcast({ phase: 'detection', categories: categories.length });
+
+        if (isAutoMode) {
+          await Promise.all(categories.map(async function(cat) {
+            var catUrl = origin + '/s?rh=n%3A' + cat.nodeId + '&fs=true';
+            var html = await fetchHtml(catUrl, MAX_RETRIES);
+            if (html) {
+              cat.maxPages = globalThis.BayesParser.detectMaxPagesFromHtml(html);
+            } else {
+              cat.maxPages = 1;
+            }
+            console.log('[BayesScore] Category:', cat.name, '(node ' + cat.nodeId + '),', cat.maxPages, 'pages');
+          }));
+        } else {
+          // Manual mode: use slider value for all categories
+          categories.forEach(function(cat) { cat.maxPages = pages; });
+        }
+
+        // --- Phase 3: Build task URLs from categories ---
+        for (var ci = 0; ci < categories.length; ci++) {
+          var cat = categories[ci];
+          var catBase = origin + '/s?rh=n%3A' + cat.nodeId + '&fs=true';
+          for (var si = 0; si < sortOrders.length; si++) {
+            for (var page = 1; page <= cat.maxPages; page++) {
+              tasks.push(catBase + '&page=' + page + sortOrders[si]);
+            }
+          }
+        }
+      }
+
+      // Fallback: if no categories discovered, use normal keyword search
+      if (categories.length === 0) {
+        console.log('[BayesScore] Depth Analysis: no categories found, falling back to normal extraction.');
+        depthAnalysis = false;
+      }
+    }
+
+    // ===================== NORMAL MODE (no depth analysis) =====================
+    if (!depthAnalysis) {
+      if (isAutoMode) {
+        // Use detected pages from current page
+        pages = detectMaxPages() || pages;
+      }
+      for (var si = 0; si < sortOrders.length; si++) {
+        for (var page = 1; page <= pages; page++) {
+          var sep = baseUrl.indexOf('?') !== -1 ? '&' : '?';
+          tasks.push(baseUrl + sep + 'page=' + page + sortOrders[si]);
+        }
+      }
+    }
+
+    // ===================== FETCH ALL PAGES =====================
+    totalPages = tasks.length;
+    pagesCompleted = 0;
+    succeeded = 0;
+    failed = 0;
+    consecutiveFailures = 0;
+    broadcast({ completed: 0, total: totalPages, newProducts: allProducts.size });
+
     for (var bi = 0; bi < tasks.length; bi += BATCH_SIZE) {
       if (abortController.signal.aborted || captchaHit) break;
+
+      // Adaptive backoff: slow down when seeing consecutive failures
+      var currentDelay = BATCH_DELAY;
+      if (consecutiveFailures >= 10) {
+        currentDelay = 2000;
+        console.warn('[BayesScore] Heavy rate limiting detected, slowing to 2s between batches');
+      } else if (consecutiveFailures >= 5) {
+        currentDelay = 1000;
+      }
+
       var batch = tasks.slice(bi, bi + BATCH_SIZE);
-      await Promise.all(batch.map(function(url) { return fetchPage(url, MAX_RETRIES); }));
-      // Delay between batches to avoid throttling
+      await Promise.all(batch.map(function(url) { return fetchSearchPage(url, MAX_RETRIES); }));
       if (bi + BATCH_SIZE < tasks.length && !captchaHit) {
-        await delay(BATCH_DELAY);
+        await delay(currentDelay);
       }
     }
 
     var elapsed = Date.now() - startTime;
     var products = Array.from(allProducts.values());
 
-    // --- Filter and score with default mode (bayesian) ---
-    var filtered = baseFilter(products, filterSponsored, minReviews, minPrice, maxPrice);
+    // --- Deduplicate color variants, then filter and score ---
+    var deduped = deduplicateVariants(products);
+    var filtered = baseFilter(deduped, filterSponsored, minReviews, minPrice, maxPrice);
     var scored = scoreBayesian(filtered.map(function(p) { return Object.assign({}, p); }));
     var query = (new URL(window.location.href)).searchParams.get('k') || '';
 
@@ -146,19 +282,95 @@
       avgScore: scored.length > 0 ? Math.round((avgSum / scored.length) * 100) / 100 : 0
     };
 
-    chrome.storage.local.set({ lastResults: data }, function() {
-      console.log('[BayesScore] Data saved to storage, opening results...');
-      // Notify popup about completion
-      chrome.runtime.sendMessage({ action: 'extractionComplete', data: data }).catch(function() {});
-      // Open results page
-      chrome.runtime.sendMessage({ action: 'openResults' });
+    var resultId = Date.now().toString(36) + Math.random().toString(36).substring(2, 6);
+    var storageKey = 'results_' + resultId;
+
+    // Clean old results BEFORE writing new one to free space
+    cleanOldResults(storageKey, function() {
+      var saveObj = {};
+      saveObj[storageKey] = data;
+      saveObj['lastResultId'] = resultId;
+      chrome.storage.local.set(saveObj, function() {
+        if (chrome.runtime.lastError) {
+          console.error('[BayesScore] Storage write failed:', chrome.runtime.lastError.message);
+        }
+        console.log('[BayesScore] Data saved to storage (' + storageKey + '), opening results...');
+        chrome.runtime.sendMessage({ action: 'extractionComplete', data: data }).catch(function() {});
+        chrome.runtime.sendMessage({ action: 'openResults', resultId: resultId });
+      });
     });
 
     abortController = null;
   }
 
+  function cleanOldResults(keepKey, callback) {
+    chrome.storage.local.get(null, function(all) {
+      var toRemove = [];
+      // Remove legacy lastResults key (no longer needed)
+      if (all.lastResults) toRemove.push('lastResults');
+
+      var resultKeys = Object.keys(all).filter(function(k) {
+        return k.indexOf('results_') === 0 && k !== keepKey;
+      });
+      // Keep only the 3 most recent results
+      if (resultKeys.length > 3) {
+        resultKeys.sort();
+        toRemove = toRemove.concat(resultKeys.slice(0, resultKeys.length - 3));
+      }
+
+      if (toRemove.length > 0) {
+        chrome.storage.local.remove(toRemove, function() { callback(); });
+      } else {
+        callback();
+      }
+    });
+  }
+
   function broadcast(progress) {
     chrome.runtime.sendMessage({ action: 'progress', progress: progress }).catch(function() {});
+  }
+
+  // ===================== VARIANT DEDUPLICATION =====================
+
+  function deduplicateVariants(products) {
+    var parent = {};
+    function find(x) {
+      if (!parent[x]) parent[x] = x;
+      while (parent[x] !== x) { parent[x] = parent[parent[x]]; x = parent[x]; }
+      return x;
+    }
+    function union(a, b) {
+      var ra = find(a), rb = find(b);
+      if (ra !== rb) parent[ra] = rb;
+    }
+
+    products.forEach(function(p) {
+      if (p.siblingAsins && p.siblingAsins.length > 0) {
+        p.siblingAsins.forEach(function(sib) { union(p.asin, sib); });
+      }
+    });
+
+    var groups = {};
+    products.forEach(function(p) {
+      var root = find(p.asin);
+      if (!groups[root]) groups[root] = [];
+      groups[root].push(p);
+    });
+
+    var result = [];
+    Object.keys(groups).forEach(function(root) {
+      var group = groups[root];
+      if (group.length === 1) { result.push(group[0]); return; }
+      group.sort(function(a, b) {
+        if (a.price > 0 && b.price > 0) return a.price - b.price;
+        if (a.price > 0) return -1;
+        if (b.price > 0) return 1;
+        return 0;
+      });
+      result.push(group[0]);
+    });
+
+    return result;
   }
 
   // ===================== SCORING ENGINE =====================
@@ -207,6 +419,7 @@
       case 'popular':  return scorePopular(filtered);
       case 'value':    return scoreValue(filtered);
       case 'premium':  return scorePremium(filtered);
+      case 'quality':  return scoreTrueQuality(filtered);
       default:         return scoreBayesian(filtered);
     }
   }
@@ -278,5 +491,41 @@
     return finalize(candidates);
   }
 
+
+  // --- Mode 5: True Quality (anti-herd, rewards genuine quality over popularity) ---
+  function scoreTrueQuality(filtered) {
+    if (filtered.length === 0) return [];
+
+    var totalWR = 0, totalR = 0;
+    filtered.forEach(function(p) { totalWR += p.rating * p.reviewCount; totalR += p.reviewCount; });
+    var C = totalR > 0 ? totalWR / totalR : 0;
+
+    var counts = filtered.map(function(p) { return p.reviewCount; }).sort(function(a, b) { return a - b; });
+    var m = Math.max(counts[Math.floor(counts.length * 0.25)] || 1, 50);
+    var satCap = Math.max(counts[Math.floor(counts.length * 0.75)] || 100, 100);
+
+    filtered.forEach(function(p) {
+      var v = p.reviewCount;
+      var R = p.rating;
+
+      var effV = v <= satCap ? v : satCap + Math.log10(1 + v - satCap) * satCap * 0.1;
+
+      p._bayesRaw = (effV / (effV + m)) * R + (m / (effV + m)) * C;
+      p.confidence = Math.round((effV / (effV + m)) * 100);
+
+      var mult = 1.0;
+      if (p.isSponsored) mult *= 0.88;
+      if (p.discount > 50) mult *= 0.92;
+      else if (p.discount > 30) mult *= 0.96;
+      if (p.boughtCount > 0 && v > 0) {
+        var buyRatio = Math.min(p.boughtCount / v, 2);
+        mult *= 1 + 0.05 * buyRatio;
+      }
+
+      p.bayesScore = Math.round(p._bayesRaw * mult * 1000) / 1000;
+    });
+
+    return finalize(filtered);
+  }
 
 })();

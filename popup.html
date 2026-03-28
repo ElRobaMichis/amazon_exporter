@@ -3,29 +3,30 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>BayesScore Finder</title>
+  <title>BayesScore</title>
   <link rel="stylesheet" href="styles/popup.css">
 </head>
 <body>
   <div class="popup">
     <!-- Header -->
     <div class="popup-header">
-      <div class="popup-logo">📊</div>
+      <div class="header-mark">B</div>
       <div>
-        <h1>BayesScore Finder</h1>
-        <p class="popup-subtitle">Find the best Amazon products</p>
+        <h1>BayesScore</h1>
+        <p class="popup-subtitle">Amazon product analyzer</p>
       </div>
     </div>
 
     <!-- Status -->
-    <div id="status" class="status-bar">
+    <div id="status" class="status-indicator">
+      <span class="status-dot"></span>
       <span id="status-text">Ready to extract</span>
     </div>
 
     <!-- Config -->
-    <div class="popup-section">
-      <label class="config-label">
-        Pages to extract
+    <div class="config-section">
+      <div class="config-group">
+        <span class="config-heading">Pages to extract</span>
         <div class="mode-row">
           <button id="modeAuto" class="mode-btn active">Auto</button>
           <button id="modeManual" class="mode-btn">Manual</button>
@@ -35,105 +36,106 @@
           <input type="range" id="pages" min="1" max="400" value="5" class="slider">
           <span id="pages-value" class="slider-value">5</span>
         </div>
-      </label>
+      </div>
 
-      <label class="config-toggle">
-        <input type="checkbox" id="multiQuery">
-        <span class="toggle-slider"></span>
-        <span class="toggle-label">
-          Multi-query mode
-          <small>5 sort orders × pages (5x products)</small>
-        </span>
-      </label>
-
-      <label class="config-toggle">
-        <input type="checkbox" id="electronicsFilter">
-        <span class="toggle-slider"></span>
-        <span class="toggle-label">
-          Electronics filter
-          <small>More results per page (~26 vs ~16)</small>
-        </span>
-      </label>
-
-      <label class="config-toggle">
-        <input type="checkbox" id="filterSponsored" checked>
-        <span class="toggle-slider"></span>
-        <span class="toggle-label">
-          Hide sponsored
-          <small>Remove ads from ranking</small>
-        </span>
-      </label>
-    </div>
-
-    <!-- Price filters -->
-    <div class="popup-section">
-      <div class="price-row">
-        <label class="price-label">
-          Min Price
-          <input type="number" id="minPrice" min="0" value="0" class="price-input">
+      <div class="config-group">
+        <span class="config-heading">Options</span>
+        <label class="config-toggle">
+          <input type="checkbox" id="multiQuery">
+          <span class="toggle-slider"></span>
+          <span class="toggle-label">
+            Multi-query mode
+            <small>5 sort orders × pages (5x products)</small>
+          </span>
         </label>
-        <label class="price-label">
-          Max Price
-          <input type="number" id="maxPrice" min="0" value="0" placeholder="∞" class="price-input">
+
+        <label class="config-toggle">
+          <input type="checkbox" id="depthAnalysis">
+          <span class="toggle-slider"></span>
+          <span class="toggle-label">
+            Depth analysis
+            <small>Auto-discover categories for deeper extraction</small>
+          </span>
         </label>
-        <label class="price-label">
-          Min Reviews
-          <input type="number" id="minReviews" min="0" value="0" class="price-input">
+
+        <label class="config-toggle">
+          <input type="checkbox" id="filterSponsored" checked>
+          <span class="toggle-slider"></span>
+          <span class="toggle-label">
+            Hide sponsored
+            <small>Remove ads from ranking</small>
+          </span>
         </label>
+      </div>
+
+      <div class="config-group">
+        <span class="config-heading">Filters</span>
+        <div class="filter-row">
+          <label class="filter-field">
+            <span class="filter-label">Min Price</span>
+            <input type="number" id="minPrice" min="0" value="0" class="filter-input">
+          </label>
+          <label class="filter-field">
+            <span class="filter-label">Max Price</span>
+            <input type="number" id="maxPrice" min="0" value="0" placeholder="∞" class="filter-input">
+          </label>
+          <label class="filter-field">
+            <span class="filter-label">Min Reviews</span>
+            <input type="number" id="minReviews" min="0" value="0" class="filter-input">
+          </label>
+        </div>
       </div>
     </div>
 
     <!-- Progress -->
     <div id="progress-section" class="progress-section hidden">
-      <div class="progress-bar-container">
-        <div id="progress-bar" class="progress-bar"></div>
+      <div class="progress-track">
+        <div id="progress-bar" class="progress-fill"></div>
       </div>
-      <div id="progress-text" class="progress-text">Extracting...</div>
+      <div class="progress-details">
+        <span id="progress-text" class="progress-text">Extracting...</span>
+        <span id="progress-pct" class="progress-pct">0%</span>
+      </div>
     </div>
 
     <!-- Actions -->
     <div class="popup-actions">
-      <button id="extractBtn" class="btn btn-primary">
-        🚀 Extract Now
-      </button>
-      <button id="abortBtn" class="btn btn-danger hidden">
-        ✋ Stop
-      </button>
+      <button id="extractBtn" class="btn btn-extract">Extract Now</button>
+      <button id="abortBtn" class="btn btn-stop hidden">Stop</button>
     </div>
 
     <!-- Results summary -->
     <div id="results-section" class="results-section hidden">
       <div class="results-grid">
         <div class="result-card">
-          <div id="res-products" class="result-num">—</div>
+          <div id="res-products" class="result-num">&mdash;</div>
           <div class="result-label">Products</div>
         </div>
         <div class="result-card">
-          <div id="res-pages" class="result-num">—</div>
+          <div id="res-pages" class="result-num">&mdash;</div>
           <div class="result-label">Pages</div>
         </div>
         <div class="result-card">
-          <div id="res-time" class="result-num">—</div>
+          <div id="res-time" class="result-num">&mdash;</div>
           <div class="result-label">Time</div>
         </div>
         <div class="result-card">
-          <div id="res-best" class="result-num">—</div>
+          <div id="res-best" class="result-num">&mdash;</div>
           <div class="result-label">Best Score</div>
         </div>
       </div>
 
-      <!-- Top 5 quick view -->
       <div id="top5" class="top5"></div>
 
       <div class="export-row">
-        <button id="exportCSV" class="btn btn-outline">📥 CSV</button>
-        <button id="exportJSON" class="btn btn-outline">📥 JSON</button>
-        <button id="showPanel" class="btn btn-outline">📊 Results</button>
+        <button id="exportCSV" class="btn btn-export">CSV</button>
+        <button id="exportJSON" class="btn btn-export">JSON</button>
+        <button id="showPanel" class="btn btn-export">Results Panel</button>
       </div>
     </div>
 
     <div class="popup-footer">
-      <span>Parser K • H3/QUIC Parallel</span>
+      <span>Parser K &bull; H3/QUIC Parallel</span>
     </div>
   </div>
 

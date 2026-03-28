@@ -1,14 +1,39 @@
 // results.js — Reads raw products from chrome.storage, scores client-side, renders grid
 
 (function () {
+  // ===================== DARK MODE =====================
+  (function initTheme() {
+    var toggle = document.getElementById('theme-toggle');
+    var isDark = localStorage.getItem('bayesscore-dark') === '1';
+
+    function applyTheme(dark) {
+      if (dark) {
+        document.body.classList.add('dark');
+        toggle.textContent = 'Light';
+        toggle.title = 'Switch to light mode';
+      } else {
+        document.body.classList.remove('dark');
+        toggle.textContent = 'Dark';
+        toggle.title = 'Switch to dark mode';
+      }
+    }
+
+    applyTheme(isDark);
+    toggle.addEventListener('click', function () {
+      isDark = !isDark;
+      localStorage.setItem('bayesscore-dark', isDark ? '1' : '0');
+      applyTheme(isDark);
+    });
+  })();
+
   var rawProducts = [];
   var allScored = [];
   var amazonUrl = '';
   var currentMode = 'bayesian';
   var statsData = null;
   var CURR = { USD: '$', MXN: 'MX$', GBP: '\u00a3', EUR: '\u20ac', JPY: '\u00a5', INR: '\u20b9', BRL: 'R$', CAD: 'CA$', AUD: 'A$', SGD: 'S$', PLN: 'z\u0142', SEK: 'kr', SAR: 'SAR', AED: 'AED' };
-  var MODE_NAMES = { bayesian: 'BayesScore', popular: 'Popular', value: 'Value', premium: 'Premium Gems' };
-  var MODE_ICONS = { bayesian: '\ud83d\udcca', popular: '\ud83d\udd25', value: '\ud83d\udcb0', premium: '\ud83d\udc8e' };
+  var MODE_NAMES = { bayesian: 'BayesScore', popular: 'Popular', value: 'Value', premium: 'Premium Gems', quality: 'True Quality' };
+  var MODE_ICONS = { bayesian: '\ud83d\udcca', popular: '\ud83d\udd25', value: '\ud83d\udcb0', premium: '\ud83d\udc8e', quality: '\ud83c\udfaf' };
 
   // ===================== SCORING ENGINE =====================
 
@@ -101,12 +126,107 @@
     return finalize(candidates);
   }
 
+  // --- Mode 5: True Quality (anti-herd, rewards genuine quality over popularity) ---
+  function scoreTrueQuality(items) {
+    if (items.length === 0) return [];
+
+    // Global stats
+    var totalWR = 0, totalR = 0;
+    items.forEach(function (p) { totalWR += p.rating * p.reviewCount; totalR += p.reviewCount; });
+    var C = totalR > 0 ? totalWR / totalR : 0;
+
+    var counts = items.map(function (p) { return p.reviewCount; }).sort(function (a, b) { return a - b; });
+    var m = Math.max(counts[Math.floor(counts.length * 0.25)] || 1, 50);
+
+    // Saturation cap: 75th percentile — beyond this, more reviews give diminishing returns
+    var satCap = Math.max(counts[Math.floor(counts.length * 0.75)] || 100, 100);
+
+    items.forEach(function (p) {
+      var v = p.reviewCount;
+      var R = p.rating;
+
+      // Effective reviews: full value up to satCap, log-compressed beyond
+      var effV = v <= satCap ? v : satCap + Math.log10(1 + v - satCap) * satCap * 0.1;
+
+      // Capped Bayesian — rating matters more, review volume matters less
+      p._bayesRaw = (effV / (effV + m)) * R + (m / (effV + m)) * C;
+      p.confidence = Math.round((effV / (effV + m)) * 100);
+
+      var mult = 1.0;
+
+      // Sponsored penalty: paid visibility ≠ earned quality
+      if (p.isSponsored) mult *= 0.88;
+
+      // Discount skepticism: heavy discounts suggest price-driven sales
+      if (p.discount > 50) mult *= 0.92;
+      else if (p.discount > 30) mult *= 0.96;
+
+      // Freshness boost: recent purchases signal active demand
+      if (p.boughtCount > 0 && v > 0) {
+        var buyRatio = Math.min(p.boughtCount / v, 2);
+        mult *= 1 + 0.05 * buyRatio;
+      }
+
+      p.bayesScore = Math.round(p._bayesRaw * mult * 1000) / 1000;
+    });
+
+    return finalize(items);
+  }
+
+  // ===================== VARIANT DEDUPLICATION =====================
+
+  function deduplicateVariants(products) {
+    // Union-Find to group color/size variants into families
+    var parent = {};
+    function find(x) {
+      if (!parent[x]) parent[x] = x;
+      while (parent[x] !== x) { parent[x] = parent[parent[x]]; x = parent[x]; }
+      return x;
+    }
+    function union(a, b) {
+      var ra = find(a), rb = find(b);
+      if (ra !== rb) parent[ra] = rb;
+    }
+
+    // Build unions from siblingAsins
+    products.forEach(function (p) {
+      if (p.siblingAsins && p.siblingAsins.length > 0) {
+        p.siblingAsins.forEach(function (sib) { union(p.asin, sib); });
+      }
+    });
+
+    // Group products by their root
+    var groups = {};
+    products.forEach(function (p) {
+      var root = find(p.asin);
+      if (!groups[root]) groups[root] = [];
+      groups[root].push(p);
+    });
+
+    // Pick cheapest from each group (products without price go last)
+    var result = [];
+    Object.keys(groups).forEach(function (root) {
+      var group = groups[root];
+      if (group.length === 1) { result.push(group[0]); return; }
+      group.sort(function (a, b) {
+        if (a.price > 0 && b.price > 0) return a.price - b.price;
+        if (a.price > 0) return -1;
+        if (b.price > 0) return 1;
+        return 0;
+      });
+      result.push(group[0]);
+    });
+
+    return result;
+  }
+
   function scoreWithMode(mode) {
-    var items = cloneProducts(rawProducts);
+    var items = deduplicateVariants(cloneProducts(rawProducts));
     switch (mode) {
       case 'popular': return scorePopular(items);
       case 'value':   return scoreValue(items);
       case 'premium': return scorePremium(items);
+      case 'quality': return scoreTrueQuality(items);
       default:        return scoreBayesian(items);
     }
   }
@@ -134,9 +254,8 @@
   function updateSubtitle() {
     var query = statsData ? statsData.query || 'Search' : 'Search';
     var elapsed = statsData && statsData.stats ? (statsData.stats.elapsedMs / 1000).toFixed(1) + 's' : '';
-    var icon = MODE_ICONS[currentMode] || '\ud83d\udcca';
     var name = MODE_NAMES[currentMode] || 'BayesScore';
-    document.getElementById('subtitle').textContent = icon + ' ' + name + ' \u2014 "' + query + '" \u2014 ' + allScored.length + ' products \u2014 ' + elapsed;
+    document.getElementById('subtitle').textContent = name + ' \u2014 "' + query + '" \u2014 ' + allScored.length + ' products \u2014 ' + elapsed;
   }
 
   // ===================== RENDER =====================
@@ -147,11 +266,15 @@
     var domain = 'https://www.amazon.com';
     try { domain = (new URL(amazonUrl)).origin; } catch (e) { /* keep default */ }
 
+    var scaleMax = (currentMode === 'bayesian' || currentMode === 'popular' || currentMode === 'quality') ? 5 : (items.length > 0 ? items[0].bayesScore : 5);
+    if (scaleMax === 0) scaleMax = 1;
+
     for (var i = 0; i < items.length && i < 300; i++) {
       var p = items[i];
       var rc = p.rank <= 3 ? 'r' + p.rank : 'rn';
       var sc = p.bayesScore >= 4.5 ? 'sc-e' : p.bayesScore >= 4.0 ? 'sc-g' : p.bayesScore >= 3.5 ? 'sc-a' : 'sc-p';
       var cur = CURR[p.currency] || '$';
+      var scorePercent = Math.min(100, Math.round((p.bayesScore / scaleMax) * 100));
 
       var full = Math.floor(p.rating);
       var half = (p.rating - full) >= 0.3;
@@ -160,30 +283,55 @@
       if (half) stars += '\u00bd';
       for (var k = full + (half ? 1 : 0); k < 5; k++) stars += '\u2606';
 
+      var badgeClass = 'generic';
+      if (p.badge) {
+        var bl = p.badge.toLowerCase();
+        if (bl.indexOf('best seller') !== -1 || bl.indexOf('bestseller') !== -1) badgeClass = 'bestseller';
+        else if (bl.indexOf('choice') !== -1) badgeClass = 'choice';
+      }
+
       var card = document.createElement('div');
       card.className = 'card' + (p.rank <= 3 ? ' top3' : '');
 
-      var html = '<div class="card-top">';
-      html += '<div class="card-rank ' + rc + '">' + p.rank + '</div>';
+      var html = '';
+
+      // Card header: rank tag + title
+      html += '<div class="card-header">';
+      html += '<span class="card-rank ' + rc + '">' + p.rank + '</span>';
+      html += '<div class="card-title">' + esc(p.title) + '</div>';
+      html += '</div>';
+
+      // Card body: image + meta
+      html += '<div class="card-body">';
       if (p.imageUrl) {
         html += '<img class="card-img" src="' + esc(p.imageUrl) + '" loading="lazy">';
       }
-      html += '<div class="card-info">';
-      html += '<div class="card-title">' + esc(p.title) + '</div>';
       html += '<div class="card-meta">';
-      html += '<span class="stars">' + stars + ' ' + p.rating + '</span>';
-      html += '<span>' + fmtNum(p.reviewCount) + ' rev</span>';
-      if (p.discount > 0) html += '<span class="green">-' + p.discount + '%</span>';
-      if (p.badge) html += '<span class="badge-tag">' + esc(p.badge) + '</span>';
-      html += '</div></div></div>';
-
-      html += '<div class="card-bottom">';
-      html += '<div class="card-price">';
-      html += p.price > 0 ? cur + p.price.toFixed(2) : '\u2014';
-      if (p.listPrice > 0) html += '<span class="old">' + cur + p.listPrice.toFixed(2) + '</span>';
+      html += '<div class="card-rating"><span class="stars">' + stars + '</span> ' + p.rating + ' <span class="meta-sep">&middot;</span> ' + fmtNum(p.reviewCount) + ' reviews</div>';
+      if (p.boughtCount > 0) {
+        html += '<div class="card-bought">' + fmtNum(p.boughtCount) + '+ bought this month</div>';
+      }
+      html += '<div class="card-tags">';
+      if (p.badge) html += '<span class="badge-tag badge-' + badgeClass + '">' + esc(p.badge) + '</span>';
       html += '</div>';
-      html += '<div style="text-align:right"><div class="score-num ' + sc + '">' + p.bayesScore.toFixed(2) + '</div>';
-      html += '<div class="score-conf">' + p.confidence + '% conf</div></div>';
+      html += '</div></div>';
+
+      // Card bottom: price + score with bar
+      html += '<div class="card-bottom">';
+      html += '<div class="card-price-area">';
+      html += '<span class="card-price">' + (p.price > 0 ? cur + p.price.toFixed(2) : '\u2014') + '</span>';
+      if (p.listPrice > 0 && p.listPrice > p.price) {
+        html += '<span class="card-list-price">' + cur + p.listPrice.toFixed(2) + '</span>';
+      }
+      if (p.discount > 0) {
+        html += '<span class="card-discount">-' + p.discount + '%</span>';
+      }
+      html += '</div>';
+      html += '<div class="card-score-area">';
+      html += '<div class="card-score-top"><span class="score-label">SCORE</span><span class="score-num ' + sc + '">' + p.bayesScore.toFixed(2) + '</span></div>';
+      html += '<div class="score-bar"><div class="score-bar-fill ' + sc + '" style="width:' + scorePercent + '%"></div></div>';
+      html += '<div class="score-conf">' + p.confidence + '% confidence</div>';
+      html += '</div>';
       html += '</div>';
 
       card.innerHTML = html;
@@ -285,19 +433,12 @@
     var sb = document.getElementById('stats-bar');
     sb.style.display = 'flex';
     var elapsed = data.stats ? (data.stats.elapsedMs / 1000).toFixed(1) + 's' : '';
-    var failedHtml = '';
-    if (data.stats && data.stats.pagesFailed > 0) {
-      failedHtml = '<div><div class="stat-value" style="color:#e17055">' + data.stats.pagesFailed + '</div><div class="stat-label">Failed</div></div>';
-    }
-    var captchaHtml = '';
-    if (data.stats && data.stats.captchaHit) {
-      captchaHtml = '<div><div class="stat-value" style="color:#d63031">!</div><div class="stat-label">CAPTCHA Hit</div></div>';
-    }
     sb.innerHTML =
-      '<div><div class="stat-value">' + rawProducts.length + '</div><div class="stat-label">Products</div></div>' +
-      '<div><div class="stat-value">' + (data.stats ? data.stats.pagesSucceeded : '-') + '</div><div class="stat-label">Pages OK</div></div>' +
-      failedHtml + captchaHtml +
-      '<div><div class="stat-value">' + elapsed + '</div><div class="stat-label">Time</div></div>';
+      '<span class="stat-pill"><strong>' + rawProducts.length + '</strong> products</span>' +
+      '<span class="stat-pill"><strong>' + (data.stats ? data.stats.pagesSucceeded : '-') + '</strong> pages</span>' +
+      (data.stats && data.stats.pagesFailed > 0 ? '<span class="stat-pill error"><strong>' + data.stats.pagesFailed + '</strong> failed</span>' : '') +
+      (data.stats && data.stats.captchaHit ? '<span class="stat-pill error"><strong>!</strong> CAPTCHA</span>' : '') +
+      '<span class="stat-pill"><strong>' + elapsed + '</strong></span>';
 
     // Show mode bar and controls
     document.getElementById('mode-bar').style.display = 'flex';
@@ -334,14 +475,32 @@
 
   // ===== LOAD DATA =====
   if (typeof chrome !== 'undefined' && chrome.storage && chrome.storage.local) {
-    chrome.storage.local.get('lastResults', function (result) {
+    var params = new URLSearchParams(window.location.search);
+    var resultId = params.get('id');
+
+    if (resultId) {
+      loadFromKey('results_' + resultId);
+    } else {
+      // No ID in URL — try lastResultId pointer, then legacy lastResults
+      chrome.storage.local.get('lastResultId', function (r) {
+        if (r && r.lastResultId) {
+          loadFromKey('results_' + r.lastResultId);
+        } else {
+          loadFromKey('lastResults');
+        }
+      });
+    }
+  } else {
+    showError('chrome.storage not available. Open this page from the extension.');
+  }
+
+  function loadFromKey(storageKey) {
+    chrome.storage.local.get(storageKey, function (result) {
       if (chrome.runtime.lastError) {
         showError('Storage error: ' + chrome.runtime.lastError.message);
         return;
       }
-      initPage(result ? result.lastResults : null);
+      initPage(result ? result[storageKey] : null);
     });
-  } else {
-    showError('chrome.storage not available. Open this page from the extension.');
   }
 })();
