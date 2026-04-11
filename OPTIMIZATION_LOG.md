@@ -1031,4 +1031,78 @@ Round 26 baseline:  1686ms median / 100 pages  (59 pps)
 Round 27 current:   1627ms median / 100 pages  (61 pps)  -3.5% wall, +3.4% pps
 ```
 
-## Total theories tested: 186 | Implemented: 77 | Discarded with data: 109
+## Round 28 — Deep Amazon Internals + Blob Parser
+
+### 🏆 blob.text() parser: -16.8% total time
+Replaced stream-based reader parser (getReader + TextDecoder + chunk loop) with
+`await (await r.blob()).text()`. Chrome decodes the entire blob natively in one C++
+pass, avoiding JavaScript-side TextDecoder call overhead, string concatenation, and
+chunk-loop bookkeeping.
+
+**Benchmark** (100 concurrent × 10 runs):
+```
+Parser               Min    Median  Avg     Products
+stream reader        1553   1574    1571    3780
+text()               1671   1681    1689    3780
+arrayBuffer+decode   1743   1793    2025    3780
+blob.text()          1336   1353    1452    3780  ← -16.8% vs Round 27
+```
+8 of 10 runs landed in 1336-1369 (very tight), same 3780 products. Blob-based decode
+is V8's fastest path for reading a response body into a string.
+
+### 🔬 Amazon SearchAssets.js deep-dive findings
+Analyzed 142KB of Amazon's internal search JavaScript. Discovered:
+
+**Customer actions** (complete list):
+```javascript
+{ PAGINATION: "pagination", REFINEMENT: "refinement", QUERY: "query" }
+```
+Only 3 valid values. `pagination` returns the smallest response (confirmed).
+
+**ATF/BTF split** (above-the-fold / below-the-fold):
+```javascript
+{ 'customer-action': 'pagination', 'page-content-type': 'atf' }  // 10 products, 350KB
+{ 'customer-action': 'pagination', 'page-content-type': 'btf' }  // 0 bytes (follow-up to ATF)
+```
+ATF mode is 36% faster per request but only returns 10 products vs 60. Does NOT scale:
+at pool 100, 600 ATF requests (6x to cover same products) would take longer than 100
+full requests, even accounting for per-request speedup.
+
+**wIndexMainSlot** pagination within a page:
+```
+w=0  → products 4-13
+w=5  → products 9-18
+w=10 → products 14-23
+...
+w=50 → products 54-63
+```
+Works but each slice is still fixed at 10 products.
+
+**ATF limitations discovered**:
+- Page 1 ATF returns 324-byte redirect chunk (no products)
+- Page 2+ ATF returns 10-product slice without pagination strip
+- Cannot request bigger slices (no valid param for size/count/limit/etc.)
+
+### Discarded this round (data-backed)
+
+| Theory | Result | Why Discarded |
+|---|---|---|
+| ATF mode for full extraction | 6x more requests needed (10 prods/req vs 60) | Doesn't scale |
+| ATF mode for first-page detection | No pagination strip in ATF response | Loses max-page info |
+| `wIndexMainSlot` for wider slices | Each slice capped at 10 products | Server ignores size params |
+| customer-action: refinement | Works but returns 2.13MB (14% larger) | Pagination still best |
+| 15 component filter params (include/exclude/main-slot/minimal/etc.) | All return HTTP 400 | Server strictly validates |
+| 17 alternative endpoints (/s/query2, /s/queryV2, /s/fast, /s/lite, /s/api, /graphql, etc.) | All return 2.3-2.5MB HTML, not JSON-stream | /s/query is unique |
+| 9 content-type variants (application/json, xml, form, octet-stream, etc.) | All return same size or slightly larger | text/plain still optimal |
+| arrayBuffer response + manual decode | 2025ms vs 1571 stream (+29% slower) | Manual decode loses V8 optimization |
+| Web Worker with 4 parallel parse workers | 1440 vs 1478 median (-2.6% only) | Not worth manifest_v3 complexity |
+| Background SW parse offload | 1.8MB structured clone message overhead | Negates parallelism benefit |
+| Force HTTP/3 via sustained requests | Chrome stuck on h2 despite alt-svc | Browser-level decision |
+
+### Round 28 cumulative impact
+```
+Round 27 baseline:  1627ms median / 100 pages  (61 pps)
+Round 28 current:   1353ms median / 100 pages  (74 pps)  -16.8% wall, +21% pps
+```
+
+## Total theories tested: 228 | Implemented: 78 | Discarded with data: 150

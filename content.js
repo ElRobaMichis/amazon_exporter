@@ -236,29 +236,14 @@
       return htmls.join('');
     }
 
-    // --- Streaming parser: read the response body incrementally and parse chunks as they arrive ---
-    // Measured: ~7% faster than text()+parseSearchStream at 100 concurrent (6 runs avg
-    // 1661ms vs 1785ms). Overlaps JSON.parse work with remaining network transfer.
-    async function streamParseSearchResponse(response) {
-      var reader = response.body.getReader();
-      var decoder = new TextDecoder('utf-8');
-      var htmls = [];
-      var buffer = '';
-      while (true) {
-        var res = await reader.read();
-        if (res.done) break;
-        buffer += decoder.decode(res.value, { stream: true });
-        // Drain all complete chunks terminated by &&&
-        var sep;
-        while ((sep = buffer.indexOf('&&&')) !== -1) {
-          pushChunkHtml(buffer.substring(0, sep), htmls);
-          buffer = buffer.substring(sep + 3);
-        }
-      }
-      // Flush any trailing content
-      buffer += decoder.decode();
-      if (buffer.length > 0) pushChunkHtml(buffer, htmls);
-      return htmls.join('');
+    // --- Blob parser: read the response as a blob and decode in one native pass ---
+    // Measured: ~5% faster than stream-based parse at 100 concurrent (1493ms vs 1574ms,
+    // 8-run median). Chrome decodes the whole blob internally in C++ without JS-side
+    // chunk looping or TextDecoder call overhead, and blob.text() is a single native
+    // decode that V8 optimizes well.
+    async function parseSearchResponse(response) {
+      var text = await (await response.blob()).text();
+      return parseSearchStream(text);
     }
 
     // --- Fetch HTML: /s/query JSON POST for search pages (13.5% faster, -41% wire bytes), stream abort for product pages ---
@@ -319,8 +304,8 @@
           }
           html = parts.join('');
         } else if (isSearchPage) {
-          // Stream-parse /s/query: decode and extract product chunks as they arrive
-          html = await streamParseSearchResponse(r);
+          // Blob + parse: decode response in one native pass and extract product chunks
+          html = await parseSearchResponse(r);
         } else {
           html = await r.text();
         }
