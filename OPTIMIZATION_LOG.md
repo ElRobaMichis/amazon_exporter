@@ -920,4 +920,115 @@ function parseSearchStream(text) {
 | Accept header variants | ±3% (noise) | Statistically identical |
 | `x-requested-with: XMLHttpRequest` header | No measurable effect | Dead weight |
 
-## Total theories tested: 168 | Implemented: 74 | Discarded with data: 94
+## Round 27 — Chunk Filter + Stream Parse + Credentials Omit
+
+### 🏆 Strict chunk filter: -9% total time
+Mapped every chunk in a /s/query response. Of 73 `data-main-slot*` chunks, only 60
+carry product data (the `:search-result-N` suffix). The other 13 are widgets:
+```
+Chunk type                                  Count   Total bytes   Products
+data-main-slot:search-result-N              60      1.32 MB       60
+data-main-slot (top ad holder)              1       76 KB         0
+data-main-slot (mid-body ad widgets)        4       228 KB        0
+data-main-slot (bottom sponsored)           2       115 KB        0
+data-main-slot (related-searches widget)    1       14 KB         0
+data-main-slot (pagination strip)           1       4 KB          0 (needed for page detect)
+data-main-slot (footer)                     4       143 KB        0
+```
+Approach E filter: include only `:search-result-N` chunks PLUS any plain `data-main-slot`
+chunk that contains `s-pagination-strip` (so `detectMaxPagesFromHtml` still works).
+
+**Benchmark** (100 concurrent × 3 runs):
+```
+Filter          InputSize   Parse   Total   Products
+all-main-slot   1.85 MB     235ms   1953ms  3580
+:search-result  1.26 MB     197ms   1779ms  3580  ← -32% input, -9% total
+```
+
+### 🏆 Stream parse: -7% total time
+Replaced `await r.text() + parseSearchStream(text)` with a ReadableStream reader that
+decodes bytes incrementally and runs `JSON.parse` on each `&&&`-terminated chunk as it
+arrives. Overlaps CPU parse work with remaining network transfer.
+
+**Benchmark** (100 concurrent × 6 runs):
+```
+Mode             Min    Median  Max    Avg
+text()+parse     1769   1784    1812   1785
+stream parse     1633   1661    1699   1661  ← -124ms (-7%)
+```
+Every streamParse run beat every textThenParse run — clean win, no variance overlap.
+Same 3780 products.
+
+### 🏆 credentials: 'omit' — -2.5% total time
+Changed fetch credentials from `'include'` to `'omit'`. Measured: 588 bytes of cookies
+not sent per request (saves ~924KB upload at 1572 requests). Also works on /dp/ pages
+for breadcrumb extraction (verified all 3 test ASINs return 200 with 31 node matches).
+
+**Benchmark** (100 concurrent × 6 runs):
+```
+Mode           Min    Median  Max    Avg
+include        1606   1662    1743   1664
+omit           1553   1590    1712   1622  ← -42ms (-2.5%)
+```
+
+### Implementation in content.js
+```javascript
+// Helper shared by sync and stream parsers
+function pushChunkHtml(chunk, htmls) {
+  var s = 0;
+  while (s < chunk.length && chunk.charCodeAt(s) <= 32) s++;
+  if (s >= chunk.length || chunk.charCodeAt(s) !== 91) return;
+  try {
+    var parsed = JSON.parse(s === 0 ? chunk : chunk.substring(s));
+    var name = parsed[1];
+    var html = parsed[2] && parsed[2].html;
+    if (!name || !html) return;
+    if (name.indexOf('data-main-slot:search-result-') === 0) htmls.push(html);
+    else if (name.indexOf('data-main-slot') === 0 && html.indexOf('s-pagination-strip') !== -1) htmls.push(html);
+  } catch (e) {}
+}
+
+async function streamParseSearchResponse(response) {
+  var reader = response.body.getReader();
+  var decoder = new TextDecoder('utf-8');
+  var htmls = [];
+  var buffer = '';
+  while (true) {
+    var res = await reader.read();
+    if (res.done) break;
+    buffer += decoder.decode(res.value, { stream: true });
+    var sep;
+    while ((sep = buffer.indexOf('&&&')) !== -1) {
+      pushChunkHtml(buffer.substring(0, sep), htmls);
+      buffer = buffer.substring(sep + 3);
+    }
+  }
+  buffer += decoder.decode();
+  if (buffer.length > 0) pushChunkHtml(buffer, htmls);
+  return htmls.join('');
+}
+```
+
+### Discarded this round (data-backed)
+| Theory | Result | Why Discarded |
+|---|---|---|
+| GET /s/query vs POST | Returns HTML (2.48MB) not JSON-stream (1.8MB) — format tied to POST | 38% larger response |
+| URL page-size params (14 tested: page-size, pageSize, count, limit, rpp, nr, ss, n, results, layout, ref=sr_all, per-page, etc.) | All return same ~140 ASINs | Amazon ignores hints |
+| customer-action in URL query string | Returns verbose response (2.26MB) | Must come from body |
+| Subdomain parallelism (m., smile., www2., apex) | CORS fail, only www.amazon.com.mx works | No sharding |
+| Force HTTP/3 upgrade (alt-svc advertised) | Chrome stuck on h2 | Browser-level decision |
+| Byte-level chunking (Uint8Array scan for 0x26 0x26 0x26) | 6.6% SLOWER than String.indexOf | V8 optimizes native indexOf |
+| Offset-based buffer (no substring copies) | Slightly slower + outlier run | V8 optimizes substring |
+| XMLHttpRequest vs fetch | 10% slower, high variance | Legacy codepath less optimized |
+| fetch options: cache/priority/mode/keepalive | All ±10ms (noise) | No measurable effect |
+| Pool size sweep (100→400) | Marginal +5-6%, high variance, CAPTCHA risk | Not worth risk |
+| Stream abort on /s/query | Products spread across full response | Can't abort early |
+| Service worker bypass | Amazon SW 623KB, intercepts all fetches | No bypass mechanism |
+
+### Round 27 cumulative impact
+```
+Round 26 baseline:  1686ms median / 100 pages  (59 pps)
+Round 27 current:   1627ms median / 100 pages  (61 pps)  -3.5% wall, +3.4% pps
+```
+
+## Total theories tested: 186 | Implemented: 77 | Discarded with data: 109

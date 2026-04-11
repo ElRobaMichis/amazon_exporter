@@ -202,26 +202,62 @@
       return new Promise(function(resolve) { setTimeout(resolve, ms); });
     }
 
-    // --- Parse /s/query JSON-streaming response into combined HTML ---
-    // Response format: chunks separated by '&&&', each chunk is JSON array [type, component, data].
-    // We only need data-main-slot* chunks (products + pagination strip); skip metadata/head/upper-slot.
-    // ~20% faster than regex replace, -2% smaller output (skips non-product chunks).
+    // --- Parse one JSON-streaming chunk and push its HTML if it's a product or pagination chunk ---
+    // STRICT filter: only 'data-main-slot:search-result-N' chunks (real products) plus any
+    // plain data-main-slot chunk containing the pagination strip (needed for page detection).
+    // The other plain data-main-slot chunks are ad holders, related searches, and bottom
+    // recommendation widgets that contribute 0 products but bloat the parser input.
+    // Measured vs unfiltered: -32% parser input bytes, same product count.
+    function pushChunkHtml(chunk, htmls) {
+      var s = 0;
+      while (s < chunk.length && chunk.charCodeAt(s) <= 32) s++;
+      if (s >= chunk.length || chunk.charCodeAt(s) !== 91 /* '[' */) return;
+      try {
+        var parsed = JSON.parse(s === 0 ? chunk : chunk.substring(s));
+        var name = parsed[1];
+        var html = parsed[2] && parsed[2].html;
+        if (!name || !html) return;
+        // Individual product chunks (the 60 per page we care about)
+        if (name.indexOf('data-main-slot:search-result-') === 0) {
+          htmls.push(html);
+        }
+        // Pagination strip (only ~3KB, needed for detectMaxPagesFromHtml)
+        else if (name.indexOf('data-main-slot') === 0 && html.indexOf('s-pagination-strip') !== -1) {
+          htmls.push(html);
+        }
+      } catch (e) { /* skip malformed chunk */ }
+    }
+
+    // --- Sync parser: split a full response text by '&&&' and extract product HTML ---
     function parseSearchStream(text) {
       var chunks = text.split('&&&');
       var htmls = [];
-      for (var i = 0; i < chunks.length; i++) {
-        var c = chunks[i];
-        // Trim leading whitespace/newlines without full trim()
-        var s = 0;
-        while (s < c.length && (c.charCodeAt(s) <= 32)) s++;
-        if (s >= c.length || c.charCodeAt(s) !== 91 /* '[' */) continue;
-        try {
-          var parsed = JSON.parse(s === 0 ? c : c.substring(s));
-          if (parsed[1] && parsed[1].indexOf('data-main-slot') === 0 && parsed[2] && parsed[2].html) {
-            htmls.push(parsed[2].html);
-          }
-        } catch (e) { /* skip malformed chunk */ }
+      for (var i = 0; i < chunks.length; i++) pushChunkHtml(chunks[i], htmls);
+      return htmls.join('');
+    }
+
+    // --- Streaming parser: read the response body incrementally and parse chunks as they arrive ---
+    // Measured: ~7% faster than text()+parseSearchStream at 100 concurrent (6 runs avg
+    // 1661ms vs 1785ms). Overlaps JSON.parse work with remaining network transfer.
+    async function streamParseSearchResponse(response) {
+      var reader = response.body.getReader();
+      var decoder = new TextDecoder('utf-8');
+      var htmls = [];
+      var buffer = '';
+      while (true) {
+        var res = await reader.read();
+        if (res.done) break;
+        buffer += decoder.decode(res.value, { stream: true });
+        // Drain all complete chunks terminated by &&&
+        var sep;
+        while ((sep = buffer.indexOf('&&&')) !== -1) {
+          pushChunkHtml(buffer.substring(0, sep), htmls);
+          buffer = buffer.substring(sep + 3);
+        }
       }
+      // Flush any trailing content
+      buffer += decoder.decode();
+      if (buffer.length > 0) pushChunkHtml(buffer, htmls);
       return htmls.join('');
     }
 
@@ -246,7 +282,7 @@
         fetchOpts = {
           signal: abortController.signal,
           method: 'POST',
-          credentials: 'include',
+          credentials: 'omit',
           headers: {
             'content-type': 'text/plain',
             'accept': '*/*'
@@ -254,7 +290,7 @@
           body: '{"customer-action":"pagination"}'
         };
       } else {
-        fetchOpts = { signal: abortController.signal, credentials: 'include' };
+        fetchOpts = { signal: abortController.signal, credentials: 'omit' };
       }
       try {
         var r = await fetch(fetchUrl, fetchOpts);
@@ -282,12 +318,11 @@
             prevTail = decoded;
           }
           html = parts.join('');
+        } else if (isSearchPage) {
+          // Stream-parse /s/query: decode and extract product chunks as they arrive
+          html = await streamParseSearchResponse(r);
         } else {
           html = await r.text();
-          // If this was /s/query, parse the JSON-streaming format into combined product HTML
-          if (isSearchPage) {
-            html = parseSearchStream(html);
-          }
         }
         if (html.length < 5000 && html.indexOf('Type the characters') !== -1) {
           captchaHit = true;
