@@ -128,6 +128,17 @@
     .filter-btn.active { border-color: var(--accent); color: var(--accent); background: var(--accent-light); font-weight: 600; }
     .sort-select { padding: 7px 10px; border: 1px solid var(--input-border); border-radius: 8px; font-size: 12px; background: var(--card-bg); color: var(--text); cursor: pointer; transition: background 0.3s, color 0.3s; }
 
+    /* ===== WORD FILTERS ===== */
+    .word-filters { padding: 2px 40px 14px; display: flex; gap: 12px; flex-wrap: wrap; }
+    .word-filter-group { flex: 1; min-width: 260px; display: flex; flex-direction: column; gap: 4px; }
+    .word-filter-label { font-size: 10px; font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase; color: var(--muted); display: flex; align-items: center; gap: 6px; }
+    .word-filter-label .hint { font-weight: 400; text-transform: none; letter-spacing: 0; color: var(--muted-light); }
+    .word-filter-input { width: 100%; padding: 8px 12px; border: 1px solid var(--input-border); border-radius: 8px; font-size: 12px; background: var(--card-bg); color: var(--text); outline: none; transition: border-color 0.2s, box-shadow 0.2s, background 0.3s; }
+    .word-filter-input:focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-light); }
+    .word-filter-input::placeholder { color: var(--muted); }
+    .word-filter-input.include-active { border-color: var(--accent); }
+    .word-filter-input.exclude-active { border-color: var(--score-poor); }
+
     /* ===== PRODUCT GRID ===== */
     .product-grid { padding: 8px 40px 40px; display: grid; grid-template-columns: repeat(auto-fill, minmax(360px, 1fr)); gap: 14px; }
 
@@ -238,6 +249,23 @@
       <option value="price-desc">Sort: Price &#8595;</option>
       <option value="discount">Sort: Discount</option>
     </select>
+  </div>
+
+  <div class="word-filters" id="word-filters" style="display:none">
+    <div class="word-filter-group">
+      <label class="word-filter-label" for="include-filter">
+        Only show
+        <span class="hint">&mdash; comma-separated, matches any</span>
+      </label>
+      <input type="text" class="word-filter-input" id="include-filter" placeholder="e.g. levoit, samsung">
+    </div>
+    <div class="word-filter-group">
+      <label class="word-filter-label" for="exclude-filter">
+        Hide containing
+        <span class="hint">&mdash; comma-separated, matches any</span>
+      </label>
+      <input type="text" class="word-filter-input" id="exclude-filter" placeholder="e.g. repuesto, repuestos">
+    </div>
   </div>
 
   <div class="loading" id="loading">

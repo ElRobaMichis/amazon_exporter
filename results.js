@@ -387,11 +387,29 @@
     }
   }
 
+  // Normalize text for filter matching: lowercase + strip diacritics so "jabón"
+  // and "jabon" compare equal.
+  function normalizeForMatch(s) {
+    return (s || '').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+  }
+
+  // Parse a comma-separated user input into a list of normalized, non-empty words.
+  function parseWordList(str) {
+    if (!str) return [];
+    return str.split(',')
+      .map(function (w) { return normalizeForMatch(w.trim()); })
+      .filter(function (w) { return w.length > 0; });
+  }
+
   function applyFilters() {
     var activeBtn = document.querySelector('.filter-btn.active');
     var f = activeBtn ? activeBtn.getAttribute('data-f') : 'all';
     var q = document.getElementById('search').value.toLowerCase();
     var s = document.getElementById('sort').value;
+    var includeInput = document.getElementById('include-filter');
+    var excludeInput = document.getElementById('exclude-filter');
+    var includeWords = parseWordList(includeInput ? includeInput.value : '');
+    var excludeWords = parseWordList(excludeInput ? excludeInput.value : '');
     var items = allScored.slice();
 
     if (f === 'top15') items = items.slice(0, 15);
@@ -400,13 +418,52 @@
 
     if (q) items = items.filter(function (p) { return p.title.toLowerCase().indexOf(q) !== -1; });
 
+    // Include filter: keep only products whose title contains at least one of the words.
+    if (includeWords.length > 0) {
+      items = items.filter(function (p) {
+        var t = normalizeForMatch(p.title);
+        for (var i = 0; i < includeWords.length; i++) {
+          if (t.indexOf(includeWords[i]) !== -1) return true;
+        }
+        return false;
+      });
+    }
+
+    // Exclude filter: drop products whose title contains any of the words.
+    if (excludeWords.length > 0) {
+      items = items.filter(function (p) {
+        var t = normalizeForMatch(p.title);
+        for (var i = 0; i < excludeWords.length; i++) {
+          if (t.indexOf(excludeWords[i]) !== -1) return false;
+        }
+        return true;
+      });
+    }
+
+    // Visual indicator for active word filters
+    if (includeInput) includeInput.classList.toggle('include-active', includeWords.length > 0);
+    if (excludeInput) excludeInput.classList.toggle('exclude-active', excludeWords.length > 0);
+
     if (s === 'rating') items.sort(function (a, b) { return b.rating - a.rating; });
     else if (s === 'reviewCount') items.sort(function (a, b) { return b.reviewCount - a.reviewCount; });
     else if (s === 'price-asc') items.sort(function (a, b) { return (a.price || 9999) - (b.price || 9999); });
     else if (s === 'price-desc') items.sort(function (a, b) { return (b.price || 0) - (a.price || 0); });
     else if (s === 'discount') items.sort(function (a, b) { return b.discount - a.discount; });
 
+    updateFilteredSubtitle(items.length);
     renderGrid(items);
+  }
+
+  // Show both total and filtered count in the subtitle when filters are active.
+  function updateFilteredSubtitle(visibleCount) {
+    var query = statsData ? statsData.query || 'Search' : 'Search';
+    var elapsed = statsData && statsData.stats ? (statsData.stats.elapsedMs / 1000).toFixed(1) + 's' : '';
+    var name = MODE_NAMES[currentMode] || 'BayesScore';
+    var total = allScored.length;
+    var countStr = visibleCount < total
+      ? visibleCount + ' of ' + total + ' products'
+      : total + ' products';
+    document.getElementById('subtitle').textContent = name + ' \u2014 "' + query + '" \u2014 ' + countStr + ' \u2014 ' + elapsed;
   }
 
   function switchMode(mode) {
@@ -491,9 +548,10 @@
       (data.stats && data.stats.captchaHit ? '<span class="stat-pill error"><strong>!</strong> CAPTCHA</span>' : '') +
       '<span class="stat-pill"><strong>' + elapsed + '</strong></span>';
 
-    // Show mode bar and controls
+    // Show mode bar, controls, and word filters
     document.getElementById('mode-bar').style.display = 'flex';
     document.getElementById('controls').style.display = 'flex';
+    document.getElementById('word-filters').style.display = 'flex';
 
     // Render initial grid
     renderGrid(allScored);
@@ -520,6 +578,8 @@
 
     document.getElementById('search').addEventListener('input', applyFilters);
     document.getElementById('sort').addEventListener('change', applyFilters);
+    document.getElementById('include-filter').addEventListener('input', applyFilters);
+    document.getElementById('exclude-filter').addEventListener('input', applyFilters);
     document.getElementById('btn-csv').addEventListener('click', function () { exportFile('csv'); });
     document.getElementById('btn-json').addEventListener('click', function () { exportFile('json'); });
   }
