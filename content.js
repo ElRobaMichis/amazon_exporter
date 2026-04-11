@@ -542,11 +542,13 @@
         var relatedSorts = sortOrders.length >= 3 ? sortOrders.slice(0, 3) : sortOrders;
 
         // Tokenize a keyword: lowercase, strip diacritics, drop stopwords and short tokens.
-        // Amazon's text-reformulation-widget often returns CROSS-SELL suggestions (e.g.
-        // for "pasta dental" it proposes "shampoo", "papel higienico", "jabon de baño"),
-        // not refinements. Without filtering, those pull 1800+ irrelevant products into
-        // the extraction. We keep only related keywords that share a meaningful token
-        // with the original search query.
+        // Amazon's text-reformulation-widget returns a mix of: (1) strict refinements
+        // ("pasta dental colgate"), (2) sibling products ("plancha de vapor portatil"
+        // when original is "plancha de vapor vertical"), and (3) cross-sells ("shampoo"
+        // when original is "pasta dental"). We only want (1). The filter requires that
+        // ALL meaningful tokens of the original appear in the related keyword — this is
+        // the definition of a refinement that specializes the query. Siblings and
+        // cross-sells drop out because at least one original token is missing.
         var STOPWORDS = { 'de':1,'la':1,'el':1,'los':1,'las':1,'para':1,'con':1,'sin':1,
           'en':1,'del':1,'un':1,'una':1,'mi':1,'tu':1,'es':1,'por':1,'al':1,'lo':1,
           'the':1,'of':1,'for':1,'with':1,'without':1,'in':1,'and':1,'or':1,'from':1,
@@ -561,13 +563,14 @@
             .filter(function(t) { return t.length >= 2 && !STOPWORDS[t]; });
         }
         var originalTokens = tokenizeKw(searchKeyword);
-        function sharesTokenWithOriginal(rk) {
+        function isRefinementOfOriginal(rk) {
           if (originalTokens.length === 0) return true; // no tokens to compare — keep all
           var relTokens = tokenizeKw(rk);
-          for (var i = 0; i < relTokens.length; i++) {
-            if (originalTokens.indexOf(relTokens[i]) !== -1) return true;
+          // Every original token must appear in the related keyword's token set
+          for (var i = 0; i < originalTokens.length; i++) {
+            if (relTokens.indexOf(originalTokens[i]) === -1) return false;
           }
-          return false;
+          return true;
         }
 
         var reformWidget = document.querySelector('[data-component-type="text-reformulation-widget"]');
@@ -584,8 +587,8 @@
                 // Skip if same as original keyword or already seen
                 if (rk && rk !== searchKeyword && !seenKeywords[rk]) {
                   seenKeywords[rk] = true;
-                  // Only keep if it shares at least one meaningful token with original
-                  if (sharesTokenWithOriginal(rk)) {
+                  // Only keep strict refinements (contain ALL original tokens)
+                  if (isRefinementOfOriginal(rk)) {
                     if (relatedKeywords.length < RELATED_KEYWORD_CAP) relatedKeywords.push(rk);
                   } else {
                     droppedCrossSell.push(rk);
@@ -595,7 +598,7 @@
             }
           });
           if (droppedCrossSell.length > 0) {
-            console.log('[BayesScore] Dropped ' + droppedCrossSell.length + ' cross-sell related keywords (no token overlap with "' + searchKeyword + '"):', droppedCrossSell.join(', '));
+            console.log('[BayesScore] Dropped ' + droppedCrossSell.length + ' non-refinement related keywords (missing tokens from "' + searchKeyword + '"):', droppedCrossSell.join(', '));
           }
           if (relatedKeywords.length > 0) {
             console.log('[BayesScore] Related keywords:', relatedKeywords.join(', '));
