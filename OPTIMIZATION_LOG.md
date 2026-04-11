@@ -1157,10 +1157,68 @@ Round 28 (blob parser, 1497ms avg / 100 pages / 74 pps) remains the shipped base
 The separate rate-limit finding is documented here for future reference but is not
 actionable due to budget/cooldown constraints.
 
-## Round 30 — Direct JSON extraction + smarter discovery (pending)
-Round 30 exploration will focus on parsing productos directly from the JSON chunk
-objects (each `data-main-slot:search-result-N` chunk exposes asin/index/data fields
-alongside html) to skip the HTML regex step entirely, and saving initial pagination
-detection fetches by reading the current search page's DOM instead.
+## Round 30 — DOM harvest at extraction start
 
-## Total theories tested: 234 | Implemented: 78 | Discarded with data: 156
+### 🏆 DOM product harvest: +bonus products, zero network cost
+When the extension activates on /s?k=keyword, the browser has already rendered the
+full search page with 60 products. We can parse `document.body.innerHTML` with the
+existing `BayesParser.parseProducts` to harvest those products instantly (~8ms total:
+7ms to read innerHTML + 1ms regex parse) with **zero network cost**.
+
+**Comparison between DOM snapshot and a fresh /s/query fetch of the same URL**:
+```
+DOM products:          60
+Fetch page=1 products: 60
+Common ASINs:          45
+DOM-only:              10  (bonus products)
+Fetch-only:             8
+Overlap:               75%
+```
+
+Amazon rotates sponsored/personalized results between requests. The DOM snapshot
+surfaces ~10 extra unique products that the first fetch would not see. We still fetch
+page=1 of each sort to capture the 8 products that ARE only in fresh fetches.
+
+### Implementation
+```javascript
+try {
+  var bodyHtml = document.body.innerHTML;
+  if (bodyHtml.indexOf('data-component-type="s-search-result"') !== -1) {
+    var domProducts = globalThis.BayesParser.parseProducts(bodyHtml, hostname);
+    if (domProducts && domProducts.length > 0) {
+      domProducts.forEach(function(p) {
+        if (!allProducts.has(p.asin)) allProducts.set(p.asin, p);
+      });
+    }
+  }
+} catch (e) { /* best-effort */ }
+```
+
+### Why we don't skip the page=1 fetch
+Initially tried skipping the page=1 default-sort task since DOM already has it. But
+75% overlap means fresh fetches contribute ~8 unique products per request. Skipping
+would lose those products. Keeping the fetch costs ~1 extra pool slot (~100ms wall
+time), which is a worthwhile trade-off for 8+ additional unique products.
+
+### Discarded this round (data-backed)
+| Theory | Result | Why Discarded |
+|---|---|---|
+| Direct JSON extraction (parse per chunk using asin/data fields) | 1441ms vs 1459ms median (-1.2%) | Within noise |
+| Parse products from chunk[2].data object | data field is `null` for all chunks | Not populated server-side |
+| /dp/ stream abort at 'nav-subnav' marker (2.76x faster) | nav-subnav at 5.9%, breadcrumbs at 12.3% | Would miss breadcrumb data |
+| Read per-product categories from DOM | Search cards don't expose breadcrumb info | Only top-level department links in sidebar |
+| /gp/product/ alternative for depth analysis | Same speed as /dp/ (~750ms stream abort) | No advantage |
+| 18 stream abort marker candidates between nav-subnav and breadcrumbs | Closest post-breadcrumbs marker is 'buybox' at 192KB | Not meaningfully closer than current 'wayfinding-breadcrumbs' |
+| Skip page=1 default sort task after DOM harvest | Loses ~8 unique products that Amazon rotates into fresh fetches | Coverage regression |
+
+### Round 30 cumulative impact
+```
+Round 28 baseline:  1353ms median / 100 pages  (74 pps)
+Round 30 addition:  DOM harvest seeds allProducts with 60 products before extraction
+                    starts, surfacing ~10 additional unique products that Amazon's
+                    result rotation would otherwise hide from pool fetches.
+```
+Net effect: **more unique products per extraction with ~8ms added start cost**. Wall
+time is essentially unchanged because DOM harvest happens before the pool fires.
+
+## Total theories tested: 241 | Implemented: 79 | Discarded with data: 163

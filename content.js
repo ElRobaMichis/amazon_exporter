@@ -190,6 +190,25 @@
     var pagesCompleted = 0;
     var totalPages = 0;
 
+    // --- Harvest products directly from the current DOM ---
+    // The user is already on /s?k=keyword — the page is fully rendered with ~60 products.
+    // Parsing the DOM gives us those products in ~8ms with zero network cost.
+    // We still fetch page=1 of each sort afterwards because Amazon rotates results
+    // between requests (measured 75% overlap between DOM and fresh fetch), so the
+    // DOM snapshot surfaces ~10 unique "bonus" products the pool fetches would miss.
+    try {
+      var bodyHtml = document.body.innerHTML;
+      if (bodyHtml.indexOf('data-component-type="s-search-result"') !== -1) {
+        var domProducts = globalThis.BayesParser.parseProducts(bodyHtml, hostname);
+        if (domProducts && domProducts.length > 0) {
+          domProducts.forEach(function(p) {
+            if (!allProducts.has(p.asin)) allProducts.set(p.asin, p);
+          });
+          console.log('[BayesScore] Harvested ' + domProducts.length + ' products from DOM');
+        }
+      }
+    } catch (e) { /* DOM harvest is best-effort */ }
+
     var startTime = Date.now();
     var POOL_CONCURRENCY = 100; // Pool size: 100 gives 14% better throughput than 60 (measured via CDP: 57 vs 49 pps). Pool 150 triggers Amazon rate limiting (TTFB 400ms→700ms).
     var consecutiveFailures = 0;
