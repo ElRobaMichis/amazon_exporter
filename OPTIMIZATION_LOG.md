@@ -482,8 +482,8 @@ bbn pages 1-6: 60 results each (optimal)
 bbn page 7:    30 results (drops to rh level)
 bbn page 8+:   12 results (degraded mode)
 ```
-The 60-result mode only works for pages 1-6. Using BBN_PAGES=6 captures all the benefit
-without wasting page 7.
+The 60-result mode only works for pages 1-6. `BBN_PAGES=7` is kept because page 7
+can still contain unique products, even though it drops to the same 30-result density as `rh=`.
 
 ## Per-Sort Yield Analysis (Round 21)
 ```
@@ -503,4 +503,421 @@ All 5 sorts contribute >78% UNIQUE products. Multi-query is VERY valuable with k
 | i=electronics (no rh) | 30 results | Fewer than keyword-only |
 | Dropping one sort for 20% request reduction | Loses 20% unique products proportionally | Same efficiency |
 
-## Total theories tested: 125 | Implemented: 55 | Discarded with data: 69
+## Implemented (Round 22 — Parser Block Cap)
+| Optimization | Result | Status |
+|---|---|---|
+| Product block cap 15000 → 12800 chars | 7.7-9.9% faster parser CPU on desktop fixtures; source parser remained equivalent to 15KB baseline | IMPLEMENTED |
+| Local JS benchmark harness (`benchmarks/parser-scan-benchmark.js`) | Saves JSON results for parser variants using the extension parser and real Amazon HTML fixtures | IMPLEMENTED |
+
+## Tested & Discarded (Round 22)
+| Theory | Result | Why Discarded |
+|---|---|---|
+| Splitless block scanner (`indexOf` loop instead of `split`) | Mixed/noisy: -0.67% to +0.84%, often slower | V8 `split` is already efficient |
+| Manual hotpaths for ASIN/title/rating | Equivalent but slower than regex baseline | Regex engine wins here |
+| Product block cap 12000 chars | 10-13% faster but loses listPrice/discount fields | Breaks data correctness |
+| Product block cap 12500 chars | Fastest on `/gp/aw/s`, but loses listPrice/discount on desktop `/s` fixtures | Too close to template boundary |
+| Product block cap 12500 chars with 12800 guard rail | Equivalent, but slower than static 12800 because the extra boundary `indexOf` runs for every product block | Guard overhead > saved substring work |
+
+## Round 22 Benchmark Files
+- `benchmarks/results/parser-scan-2026-04-11T05-30-21-932Z.json` — desktop `teclado mecanico`: source parser 3.20ms vs 3.47ms baseline, equivalent
+- `benchmarks/results/parser-scan-2026-04-11T05-30-23-330Z.json` — desktop `mouse`: source parser 3.26ms vs 3.59ms baseline, equivalent
+- `benchmarks/results/parser-scan-2026-04-11T05-30-23-420Z.json` — `/gp/aw/s` `mouse`: source parser 3.24ms vs 3.61ms baseline, equivalent
+- `benchmarks/results/parser-scan-2026-04-11T05-31-26-272Z.json` — post-cleanup `/gp/aw/s` verification: source parser equivalent; 12.5KB remains valid only for mobile fixture, so 12.8KB kept for margin
+- `benchmarks/results/parser-scan-2026-04-11T05-34-40-883Z.json`, `parser-scan-2026-04-11T05-34-41-176Z.json`, `parser-scan-2026-04-11T05-34-41-871Z.json` — guard-rail iteration: equivalent, but not consistently faster than static 12.8KB
+
+## Implemented (Round 23 — Prefetch Gating + Strategy Sweep)
+| Optimization | Result | Status |
+|---|---|---|
+| Gate depth prefetch behind `depthAnalysis` instead of `detectPages` always prefetching | Normal mode avoids 14 background prefetch requests; multi-query avoids 14 background prefetch requests (28.57% fewer requests competing with 35-page extraction in the modeled 7-page multi scenario) | IMPLEMENTED |
+| `prefetchDiscovery` message for explicit depth prefetch | Depth mode still prefetches when saved config or toggle is enabled | IMPLEMENTED |
+
+## Tested & Discarded (Round 23)
+| Theory | Result | Why Discarded |
+|---|---|---|
+| Harvest current desktop page and skip mobile page 1 in normal/multi | `mouse` fixture had 58/60 ASIN overlap with `/gp/aw/s` page 1 | Not equivalent; changes coverage |
+| Change `BBN_PAGES` / swap bbn page 7 to rh | Live 7-page sample for node 21556372011 showed bbn and rh both return 60 markers pages 1-6 and 30 on page 7; latency mixed (bbn mean 870ms, rh mean 858ms) | No safe speed signal; product sets not identical |
+
+## Round 23 Benchmark Files
+- `benchmarks/results/prefetch-gating-2026-04-11T05-47-31-962Z.json` — request-budget benchmark: normal avoids 14 background requests; multi-query avoids 14 background requests; depth scenarios unchanged
+- `benchmarks/results/bbn-rh-page-scan-2026-04-11T05-45-00-000Z.json` — limited live bbn/rh sample for `mouse` + node 21556372011; no change recommended
+
+## Implemented (Round 24 — Depth Prefetch Reuse + Header Cleanup)
+| Optimization | Result | Status |
+|---|---|---|
+| Reuse/await in-flight depth prefetch when extraction starts | Avoids duplicate depth discovery if the user clicks Extract while popup prefetch is still running; modeled worst case avoids 14 duplicate requests (~219 pool-slot ms with current assumptions) | IMPLEMENTED |
+| Remove custom `Accept: text/html` header from prefetch detection search fetches | Live Chrome page-context sample on Amazon Mexico stayed status/product-count equivalent and improved 936ms → 922ms average (-1.5%) | IMPLEMENTED |
+
+## Key Discovery (Round 24)
+Depth + multi-query had a timing hole: the popup could start category prefetch, then `startExtraction` could begin its own discovery before the prefetch finished. The new shared prefetch promise makes extraction wait for the in-flight result and consume it once, so the background optimization no longer competes with the real extraction.
+
+## Round 24 Benchmark Files
+- `benchmarks/results/prefetch-race-2026-04-11T05-51-47-662Z.json` — modeled immediate/mid/late/after-prefetch clicks; immediate click avoids 14 duplicate requests, mid avoids 7, late avoids 3, after-prefetch unchanged
+- `benchmarks/results/prefetch-header-benchmark-2026-04-11T05-56-00-000Z.json` — live Amazon Mexico page-context fetch sample: no custom search header preserved status 200 and 60 product markers while reducing average latency by 14ms
+
+## Implemented (Round 25 — Parser Hotpath + Compact Result Payload)
+| Optimization | Result | Status |
+|---|---|---|
+| Combine product URL + sibling ASIN extraction into one `/dp/ASIN` regex pass | Live parser benchmark on Amazon Mexico stayed equivalent and improved parser CPU by 2.3-3.1% before adoption; post-adoption source/candidate are equivalent | IMPLEMENTED |
+| Compact extraction result payload (`rawProducts` + `scoredPreview` + `scoredCount`) | Local serialization proxy reduced payload bytes by 52.9-54.0% and stringify cost by 56.9-74.3% for 250-5000 product payloads | IMPLEMENTED |
+| Preview-only Bayesian scoring during extraction | Top 5 + summary stayed equivalent to full ranking; local CPU reduced 75.8-86.1% for the extraction-time scoring step | IMPLEMENTED |
+| Normalize multi-query base URLs by deleting existing `s=` only when multi-query owns sort expansion | Sorted-start multi-query case fixed 28/35 URLs with duplicate `s=` params → 0/35, while normal mode preserves the user's current sort | IMPLEMENTED |
+
+## Key Discovery (Round 25)
+The extraction path was still paying for a full cloned+sorted `scored` array even though the popup only needs count, summary, and top 5. Keeping `rawProducts` as the single full product payload and recomputing full rankings in `results.html` removes the duplicate storage/message payload without changing extraction coverage.
+
+## Round 25 Benchmark Files
+- `benchmarks/results/parser-link-hotpath-2026-04-11T06-00-29-808Z.json`, `parser-link-hotpath-2026-04-11T06-00-34-422Z.json`, `parser-link-hotpath-2026-04-11T06-00-39-106Z.json` — pre-adoption live parser hotpath samples: equivalent, 2.28-3.07% faster
+- `benchmarks/results/parser-link-hotpath-2026-04-11T06-06-21-671Z.json` — post-adoption verification: source parser and combined-link variant equivalent
+- `benchmarks/results/result-payload-2026-04-11T06-06-23-554Z.json` — compact payload benchmark: 52.9-54.0% fewer serialized bytes, 56.9-74.3% lower stringify cost
+- `benchmarks/results/scoring-preview-2026-04-11T06-06-24-653Z.json` — preview-only scoring benchmark: top 5/summary equivalent, 75.8-86.1% lower mean CPU
+- `benchmarks/results/url-normalization-2026-04-11T06-06-24-705Z.json` — URL task-generation benchmark: sorted-start multi-query duplicate sort params 28 → 0
+
+## Implemented (Round 26 — Results/Scoring Follow-up)
+| Optimization | Result | Status |
+|---|---|---|
+| Skip redundant default score sort in `results.js` filters | Local apply-filter model stayed order-equivalent; default all-results path reduced 93-98% for 250-10000 product arrays, filtered score paths reduced 5-65% depending selectivity | IMPLEMENTED |
+| Quickselect percentile extraction for scoring | Equivalent `m`/`satCap`/checksum; for 1000-10000 products reduced percentile work by 60.9-90.7% in Bayesian, 76.2-90.1% in preview, and 64.3-88.2% in True Quality | IMPLEMENTED |
+| Mark new payloads as `variantDeduped` and skip second results-page variant dedup | Equivalent for new deduped payload shape; local mode-switch prep reduced 65.8-77.6% for 250-10000 product arrays | IMPLEMENTED |
+
+## Tested & Discarded (Round 26)
+| Theory | Result | Why Discarded |
+|---|---|---|
+| Batch result-card DOM appends with `DocumentFragment` | Chrome page-context DOM benchmark on 300 result cards was slightly slower: 2.97ms direct append vs 3.10ms fragment | No measured win |
+
+## Round 26 Benchmark Files
+- `benchmarks/results/apply-filter-sort-2026-04-11T06-22-35-319Z.json` — redundant score-sort skip: equivalent order, up to 98.3% lower default sort/filter CPU in the modeled results path
+- `benchmarks/results/scoring-percentile-2026-04-11T06-22-33-788Z.json` — quickselect percentiles: equivalent, strongest wins on 2500+ product sets
+- `benchmarks/results/results-dedup-skip-2026-04-11T06-23-27-800Z.json` — results-page second-dedup skip: equivalent for payloads marked already deduped, 65.8-77.6% lower prep time
+- `benchmarks/results/render-fragment-2026-04-11T06-20-27-975Z.json` — DocumentFragment render test: discarded because it was 4.38% slower on the measured run
+
+## Implemented (Round 22 — Chrome DevTools MCP Deep Profiling)
+| Optimization | Result | Status |
+|---|---|---|
+| **POOL_CONCURRENCY 60 → 100** | **14% faster for large extractions** (57 vs 49 pps measured via CDP) | IMPLEMENTED |
+| Chrome DevTools MCP configured at user scope | All future sessions have CDP access | INFRASTRUCTURE |
+| Dedicated profile at C:\Users\agust\.chrome-mcp-profile for real sessions | chrome-devtools-real server with persistent login | INFRASTRUCTURE |
+
+## Round 22 — Real Measurements via Chrome DevTools Protocol
+
+### Performance Trace (Logged In)
+Real CDP performance trace on search page with authenticated session:
+```
+LCP:  546 ms (excellent - <1200ms is great)
+TTFB: 124 ms (excellent - single navigation)
+CLS:  0.03  (excellent - <0.1)
+
+LCP breakdown:
+  TTFB:         124 ms (23%)
+  Load delay:   400 ms (73%) ← bottleneck is LCP resource discovery
+  Load duration:  1 ms ( 1%)
+  Render delay:  20 ms ( 4%)
+```
+
+### Pool Size Optimal Analysis (measured via CDP network waterfall)
+```
+Pool  Wall    TTFB   Download  PPS   Notes
+20    896ms   479ms   318ms    22    Low throughput
+40    989ms   382ms   457ms    40    Good start
+60   1229ms   399ms   746ms    49    Previous optimal
+100  1742ms   400ms  1207ms    57    ← NEW optimal (14% faster)
+120  2187ms   395ms  1392ms    56    No improvement
+150  2571ms   698ms  1200ms    59    Amazon rate limits! (TTFB 400→698)
+```
+
+### Network Throttling Results
+```
+Fast 3G (1.6 Mbps): 20 pages in 28s = 0.7 pps (70x slower)
+Slow 4G (400 Kbps): 20 pages in 28s = 0.7 pps
+  → Pool size IRRELEVANT on slow: bandwidth is total bottleneck
+  → Pool 5 / 10 / 20 all take same wall time on Slow 4G
+  → Safe to use pool 100 even for slow connections
+```
+
+### CPU Throttling (4x slowdown — low-end device)
+```
+60 pages wall time: 2357ms (vs ~1400ms normal)
+Parse total:         98ms (1.64ms/page)
+Dedup total:          3ms
+CPU = only 4.3% of wall time even at 4x slowdown
+  → Confirms: parser/scoring optimizations have diminishing returns
+  → 96%+ of extraction time is ALWAYS network I/O
+```
+
+### Logged In vs Anonymous (same session, different credentials mode)
+```
+Logged in:  1264ms, 47 pps, TTFB 380ms, 1311 KB, 3656 ASINs
+Anonymous:  1292ms, 46 pps, TTFB 360ms, 1371 KB, 3604 ASINs
+  → Amazon treats them nearly identically for search
+  → Slight difference: -60KB HTML for logged-in (no onboarding UI)
+  → Validates all previous benchmarks (no login required)
+```
+
+## Tested & Discarded (Round 22)
+| Theory | Result | Why Discarded |
+|---|---|---|
+| Pool 120-150 for higher throughput | Pool 120 same as 100, pool 150 triggers Amazon rate limiting (TTFB doubles 400→698ms) | 100 is the ceiling |
+| Smaller pool for slow connections | Pool 5/10/20 all same wall time on Slow 4G | Bandwidth-bound, not concurrency-bound |
+| Login session for better rate limits | No measurable difference (47 vs 46 pps) | Amazon treats both equally |
+
+## Implemented (Round 23 — Coverage Expansion)
+| Optimization | Result | Status |
+|---|---|---|
+| **DEPTH_PAGE_CAP 40 → 60** | **+3,231 products (+27%)** at 8.08 prods/request | IMPLEMENTED |
+| **+review-count-rank as 6th sort** | **+427 products** at 5.34 prods/request | IMPLEMENTED |
+| **Related search keyword expansion** (from text-reformulation-widget) | **+1,800 products at 20 prods/req (best ratio ever)** | IMPLEMENTED |
+
+## Round 23 — Coverage Benchmarks via Chrome DevTools MCP
+
+### DEPTH_PAGE_CAP analysis
+```
+Cap 40: 12,006 products, 800 requests (15.0 prods/req baseline)
+Cap 60: +3,231 products, +400 requests (8.08 prods/req)  ← sweet spot
+Cap 80: +2,301 products, +400 requests (5.75 prods/req)  ← diminishing
+```
+
+### Sort order analysis (incremental addition)
+```
+5 baseline sorts:      7,435 products
++review-count-rank:    +427 products (5.34 prods/req) ← added as 6th sort
++popularity-rank:      +359 products (4.49 prods/req) ← borderline
++exact-aware-popularity: +228 products (2.85 prods/req) ← discarded
+```
+
+### Related search keyword expansion (THE BIG WIN)
+```
+Baseline (keyword only): 900 products in 21 requests
+Related keywords found in text-reformulation-widget:
+  +audifonos+bluetooth+diadema:  +428 products (28.5 prods/req)
+  +audifonos+bluetooth+samsung:  +426 products (28.4 prods/req)
+  +audifonos+bluetooth+sony:     +360 products (24.0 prods/req)
+  +audifonos+bluetooth+huawei:   +213 products (14.2 prods/req)
+  +audifonos+bluetooth+xiaomi:   +169 products (11.3 prods/req)
+  +audifonos+bluetooth+lenovo:   +204 products (13.6 prods/req)
+
+Total added: 1,800 products in 90 extra requests = 20 prods/req AVG
+  → 4x better ratio than page cap increase
+  → Captures products in categories NOT discovered by depth analysis
+```
+
+### Sample size (tested, not implemented)
+```
+Sample  Unique Leaves Found
+10:     4 categories
+15:     4 (no new)
+20:     4 (no new)
+21:     5 (Over-Ear found)
+25:     5 (no more)
+→ Not worth raising: diminishing returns for the fetch cost
+→ Related searches compensate indirectly
+```
+
+## Grand Final Benchmark — 23 Rounds Combined
+```
+Old baseline (Round 1):
+  Requests: 8,575
+  Time:     ~266s+ (rate limited, often crash)
+  Products: unknown (never completed)
+  Relevance: 89%
+
+New config (Round 23):
+  Requests: 1,572
+  Time:     19.8s (at pool 100, sustained 79 pps)
+  Products: 16,957
+  Relevance: 99%
+  Rate limits: zero
+
+Or with prefetch + smaller search: ~370 requests in ~4.5s for ~12,000 products
+```
+
+## Round 24 — Deep Protocol Investigation (CDP-Level)
+With Chrome DevTools MCP, investigated transport and endpoint-level optimizations.
+
+### Confirmed via CDP (no more optimizations possible at this layer)
+- **HTTP/3 (QUIC) is ALREADY in use** — `nextHopProtocol: 'h3'` confirmed
+- **TTFB sequential real = 121ms** (vs 547ms at pool concurrency, diff is server queue time)
+- **Compression ratio = 5.94x** (262KB wire → 1584KB decoded) — gzip optimal
+- **DNS/TCP/TLS = 0ms** on reused connections (expected)
+- **Server-side queue ~280ms per request at pool 100** — physical server limit
+
+### New Endpoints Discovered
+1. **`POST /s/query`** — JSON-streaming search endpoint
+   - Content-Type: `application/json-amazonui-streaming`
+   - Supports `rh=`, `bbn=`, sorts, pagination (same as HTML)
+   - Request body: `{"customer-action":"query"}` (27 bytes)
+   - **Same size/speed as HTML fetch** — no advantage
+2. **`GET data.amazon.com.mx/api/marketplaces/{mid}/products/ASIN1,ASIN2,...`** — batch product API
+   - REST API returning JSON
+   - Accepts comma-separated ASINs
+   - **Only returns delivery info and badges** — no title/price/rating/reviews
+3. **`GET /hz/rhf`** — recommendation widget HTML (not useful)
+
+### Tested & Discarded (Round 24)
+| Theory | Result | Why Discarded |
+|---|---|---|
+| Brotli compression | Amazon serves gzip regardless of Accept-Encoding | Server-controlled |
+| Multiple HTTP connections | `amazon.com.mx` (no www) fails CORS | Chrome manages 1 conn/origin |
+| Minimal headers variations | ~4% improvement, within noise (3-run A/B) | Too small |
+| `cache: 'reload'` | Initially 13% faster, actually 6% SLOWER at scale | Was noise |
+| `/s/query` POST endpoint | Same size/speed as HTML, just JSON wrapped | Equivalent |
+| `/api/.../products/` batch API | Missing title/price/rating/reviews | Insufficient data |
+| Remove keyword hybrid + more related | Net neutral (1.1s slower, 61 more products for 36 more tasks) | Reverted |
+
+## Round 24 Conclusion — Physical Ceiling Reached
+After 158 theories and CDP-level investigation, the extension operates at the **absolute physical limit**:
+- HTTP/3 active, best compression, single conn/origin (Chrome's default) = all optimal
+- 94% of time is server response time (Amazon's queue), uncontrollable from client
+- All alternative endpoints provide equivalent or worse data tradeoffs
+
+**Current config is empirically optimal**:
+- POOL_CONCURRENCY 100 (measured sweet spot)
+- DEPTH_PAGE_CAP 60 (+27% products for 5s extra)
+- 6 sorts including `review-count-rank`
+- Keyword hybrid pages (42 tasks for ~59 products)
+- 6 related searches × 5 pages × 3 sorts (90 tasks for ~1800 products)
+
+## Round 25 — JSON Streaming Endpoint Replacement
+
+### 🏆 Major Discovery: `/s/query` POST endpoint is 27.9% faster
+After the initial analysis said `/s/query` was equivalent, deeper CDP-level measurement
+revealed the TRUE difference is in **transfer size** (wire bytes), not decoded size:
+
+```
+Resource Timing API real measurements (single request):
+                    /gp/aw/s    /s/query    Diff
+Transfer size:      265 KB      157 KB      -41% (wire)
+Decoded size:       1622 KB     1345 KB     -17%
+TTFB:               133 ms      387 ms      +254 ms
+Download:           734 ms      335 ms      -54% ⚡
+Total:              937 ms      723 ms      -23%
+Compression ratio:  6.12x       8.60x       better
+```
+
+### Why /s/query wins at scale (benchmarked with 960 tasks, pool 100):
+```
+Method              Wall      PPS   Products
+HTML /gp/aw/s       13487ms   71    12679
+JSON /s/query       9720ms    99    12684  ← SAME products, 27.9% faster
+```
+
+Bandwidth saving amplifies at scale: with pool 100 sustained, -41% wire bytes = bigger
+wall time improvement. At 60 concurrent the gain was 13.5%, at 100 concurrent it's 27.9%.
+
+### Sustained load test (200 requests)
+```
+200 POST /s/query @ pool 60: 3530ms, 57 pps, 200/200 OK, 0 rate limits, 0 captchas
+```
+
+### Why the initial test was misleading
+My first test used `html.length` (decoded body size) which showed ~1700KB vs ~1500KB
+for HTML (similar). Chrome DevTools Resource Timing API exposes `transferSize`
+(compressed wire bytes) which revealed the real -41% saving.
+
+### Implementation
+```javascript
+// In fetchHtml(), detect search page URLs and convert to JSON POST:
+var isSearchPage = !abortMarker && url.indexOf('/gp/aw/s?') !== -1;
+if (isSearchPage) {
+  fetchUrl = url.replace('/gp/aw/s?', '/s/query?');
+  fetchOpts = {
+    method: 'POST',
+    credentials: 'include',
+    headers: {
+      'content-type': 'application/json',
+      'accept': 'text/html,image/webp,*/*',
+      'x-requested-with': 'XMLHttpRequest'
+    },
+    body: '{"customer-action":"query"}'
+  };
+}
+// After fetch, unescape JSON: html.replace(/\\"/g, '"').replace(/\\n/g, '\n')
+```
+
+### Related discoveries (not implemented)
+- `GET data.amazon.com.mx/api/marketplaces/{mid}/products/ASIN1,...` — batch API, but no title/price/rating/reviews
+- `/hz/rhf` — recommendation widgets, not useful for search
+- Amazon's `/s/query` accepts: `k=`, `rh=`, `bbn=`, sorts, pagination — full compatibility
+
+## Round 26 — /s/query Follow-up: Body, Headers, Streaming Parser
+
+### Body variants at scale (100 concurrent × 3 runs, fetch+parse end-to-end)
+```
+Body                               Total   Parse   Decoded   Products
+{"customer-action":"pagination"}   1742ms  229ms   1.36MB    3780
+{"customer-action":"query"}        2015ms  349ms   1.67MB    3780
+{}                                 2051ms  368ms   1.67MB    3780
+```
+**Finding:** `pagination` is 14% faster than `{}` or `query` because the server returns
+a 18% more compact response (1.36MB vs 1.67MB). `{}` is valid (HTTP 200) but triggers
+the default verbose mode. Only two valid customer-action values exist: `pagination` and
+`query`. All others (refine, filter, sort, load-more, next-page, etc.) return 400.
+
+### Header minimization (150 concurrent × 4 runs, interleaved)
+```
+Config                                                       Avg     Min    Max
+current (ct:text/plain + accept:html,webp,*/* + x-rw)        2243ms  2201   2281
+accept:*/*  + ct:text/plain                                  2262ms  2192   2336
+minimal (ct:text/plain only)                                 2258ms  2178   2320
+```
+**Finding:** At scale, header choice is statistically noise (~3% spread). The earlier
+60-concurrent test that showed 33% speedup from dropping `x-requested-with` was pure
+noise. BUT the extra headers are dead weight with zero benefit — simplified to
+`content-type: text/plain` + `accept: */*` for cleaner code.
+
+### 🏆 JSON-streaming parser: 19.5% faster parse
+The `/s/query` response is `application/json-amazonui-streaming` format: chunks separated
+by `&&&`, each chunk is a JSON array `["dispatch", component_name, {html, ...}]`.
+Discovered via CDP inspection:
+```
+Components in a typical response (81 chunks total):
+  data-client-side-metrics-info   456 B   (analytics, skippable)
+  data-search-metadata            1012 B  (skippable)
+  data-title-and-meta             789 B   (SEO, skippable)
+  data-upper-slot                 7776 B  (top banner, skippable)
+  data-persist-to-head            ~9 KB   (skippable)
+  data-main-slot*                 ~1.8 MB (PRODUCTS + pagination strip)
+```
+
+Replaced the triple-replace unescape (`\" → "`, `\n → newline`, `\\ → \`) with
+`JSON.parse` per chunk, keeping only `data-main-slot*` entries:
+```
+                      Parse   Total (100 concurrent)
+Triple-replace        226ms   1765ms
+JSON streaming        182ms   1686ms  ← -19.5% parse, -4.5% total
+```
+Same 3780 products extracted. `JSON.parse` is native and ~3x faster than JS regex
+replaces, AND skipping ~20KB of non-product chunks shrinks the input to the parser.
+
+### Implementation
+```javascript
+// In content.js, replacing the regex unescape:
+function parseSearchStream(text) {
+  var chunks = text.split('&&&');
+  var htmls = [];
+  for (var i = 0; i < chunks.length; i++) {
+    var c = chunks[i];
+    var s = 0;
+    while (s < c.length && (c.charCodeAt(s) <= 32)) s++;
+    if (s >= c.length || c.charCodeAt(s) !== 91 /* '[' */) continue;
+    try {
+      var parsed = JSON.parse(s === 0 ? c : c.substring(s));
+      if (parsed[1] && parsed[1].indexOf('data-main-slot') === 0 && parsed[2] && parsed[2].html) {
+        htmls.push(parsed[2].html);
+      }
+    } catch (e) {}
+  }
+  return htmls.join('');
+}
+```
+
+### Discarded this round
+| Theory | Result | Why Discarded |
+|---|---|---|
+| Empty body `{}` instead of pagination | Works but returns verbose response (1.67MB vs 1.36MB) | 14% slower |
+| `null` / empty string body | HTTP 400 | Server rejects |
+| Short action name `"a"` | HTTP 400 | Server validates |
+| Other action values (refine/filter/sort/etc., 17 tested) | All HTTP 400 | Only pagination/query valid |
+| Params (k, page) in body instead of URL | HTTP 400 | Must be in URL query string |
+| Accept header variants | ±3% (noise) | Statistically identical |
+| `x-requested-with: XMLHttpRequest` header | No measurable effect | Dead weight |
+
+## Total theories tested: 168 | Implemented: 74 | Discarded with data: 94

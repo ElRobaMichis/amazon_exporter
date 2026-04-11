@@ -39,12 +39,12 @@ document.addEventListener('DOMContentLoaded', () => {
       // Try direct message first, inject only if needed
       let response;
       try {
-        response = await chrome.tabs.sendMessage(tab.id, { action: 'detectPages' });
+        response = await chrome.tabs.sendMessage(tab.id, { action: 'detectPages', prefetch: depthAnalysis.checked });
       } catch (e) {
         try {
           await chrome.scripting.executeScript({ target: { tabId: tab.id }, files: ['lib/parser.js', 'content.js'] });
           await new Promise(r => setTimeout(r, 100));
-          response = await chrome.tabs.sendMessage(tab.id, { action: 'detectPages' });
+          response = await chrome.tabs.sendMessage(tab.id, { action: 'detectPages', prefetch: depthAnalysis.checked });
         } catch (e2) { /* injection failed */ }
       }
       if (response && response.pages > 0) {
@@ -57,7 +57,21 @@ document.addEventListener('DOMContentLoaded', () => {
       detectedInfo.innerHTML = '<strong>—</strong>';
     }
   }
-  detectPages();
+
+  async function triggerDepthPrefetch() {
+    if (!depthAnalysis.checked) return;
+    try {
+      const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+      if (!tab || !tab.url || !tab.url.includes('amazon')) return;
+      try {
+        await chrome.tabs.sendMessage(tab.id, { action: 'prefetchDiscovery' });
+      } catch (e) {
+        await chrome.scripting.executeScript({ target: { tabId: tab.id }, files: ['lib/parser.js', 'content.js'] });
+        await new Promise(r => setTimeout(r, 100));
+        await chrome.tabs.sendMessage(tab.id, { action: 'prefetchDiscovery' });
+      }
+    } catch (e) { /* prefetch is best-effort */ }
+  }
 
   // Mode toggle
   modeAuto.addEventListener('click', () => {
@@ -106,6 +120,7 @@ document.addEventListener('DOMContentLoaded', () => {
         modeManual.click();
       }
     }
+    detectPages();
   });
 
   // Slider update
@@ -120,6 +135,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
   depthAnalysis.addEventListener('change', () => {
     updateEstimate();
+    triggerDepthPrefetch();
   });
 
   // Save config on any change
@@ -202,7 +218,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
   // Check for existing results
   chrome.runtime.sendMessage({ action: 'getResults' }, (response) => {
-    if (response && response.scored && response.scored.length > 0) {
+    if (response && hasResultProducts(response)) {
       showResults(response);
     }
   });
@@ -266,12 +282,15 @@ document.addEventListener('DOMContentLoaded', () => {
   }
 
   function showResults(data) {
-    if (!data || !data.scored) return;
+    if (!data || !hasResultProducts(data)) return;
+
+    const preview = data.scored || data.scoredPreview || [];
+    const productCount = data.scoredCount || preview.length || (data.rawProducts ? data.rawProducts.length : 0);
 
     resultsSection.classList.remove('hidden');
-    setStatus(`${data.scored.length} products ranked`, 'done');
+    setStatus(`${productCount} products ranked`, 'done');
 
-    document.getElementById('res-products').textContent = data.scored.length;
+    document.getElementById('res-products').textContent = productCount;
     document.getElementById('res-pages').textContent = data.stats?.pagesSucceeded || '—';
     document.getElementById('res-time').textContent = data.stats ? (data.stats.elapsedMs / 1000).toFixed(1) + 's' : '—';
     document.getElementById('res-best').textContent = data.summary ? data.summary.maxScore.toFixed(2) : '—';
@@ -279,7 +298,7 @@ document.addEventListener('DOMContentLoaded', () => {
     // Top 5
     const top5 = document.getElementById('top5');
     top5.innerHTML = '';
-    data.scored.slice(0, 5).forEach((p, i) => {
+    preview.slice(0, 5).forEach((p, i) => {
       const item = document.createElement('div');
       item.className = 'top5-item';
       item.innerHTML = `
@@ -289,6 +308,12 @@ document.addEventListener('DOMContentLoaded', () => {
       `;
       top5.appendChild(item);
     });
+  }
+
+  function hasResultProducts(data) {
+    return (data.scored && data.scored.length > 0)
+      || (data.scoredPreview && data.scoredPreview.length > 0)
+      || (data.rawProducts && data.rawProducts.length > 0);
   }
 
   function downloadFile(content, filename, mimeType) {

@@ -31,6 +31,8 @@
   var amazonUrl = '';
   var currentMode = 'bayesian';
   var statsData = null;
+  var scoreCache = {};
+  var variantsAlreadyDeduped = false;
   var CURR = { USD: '$', MXN: 'MX$', GBP: '\u00a3', EUR: '\u20ac', JPY: '\u00a5', INR: '\u20b9', BRL: 'R$', CAD: 'CA$', AUD: 'A$', SGD: 'S$', PLN: 'z\u0142', SEK: 'kr', SAR: 'SAR', AED: 'AED' };
   var MODE_NAMES = { bayesian: 'BayesScore', popular: 'Popular', value: 'Value', premium: 'Premium Gems', quality: 'True Quality' };
   var MODE_ICONS = { bayesian: '\ud83d\udcca', popular: '\ud83d\udd25', value: '\ud83d\udcb0', premium: '\ud83d\udc8e', quality: '\ud83c\udfaf' };
@@ -39,16 +41,54 @@
 
   function computeBayesBase(items) {
     var totalWR = 0, totalR = 0;
-    items.forEach(function (p) { totalWR += p.rating * p.reviewCount; totalR += p.reviewCount; });
+    var counts = [];
+    items.forEach(function (p) {
+      totalWR += p.rating * p.reviewCount;
+      totalR += p.reviewCount;
+      counts.push(p.reviewCount);
+    });
     var C = totalR > 0 ? totalWR / totalR : 0;
-    var counts = items.map(function (p) { return p.reviewCount; }).sort(function (a, b) { return a - b; });
-    var m = Math.max(counts[Math.floor(counts.length * 0.25)] || 1, 50);
+    var m = Math.max(selectNumber(counts, Math.floor(counts.length * 0.25)) || 1, 50);
     items.forEach(function (p) {
       var v = p.reviewCount, R = p.rating;
       p._bayesRaw = (v / (v + m)) * R + (m / (v + m)) * C;
       p.confidence = Math.round((v / (v + m)) * 100);
     });
     return { C: C, m: m };
+  }
+
+  function selectNumber(values, k) {
+    if (values.length === 0) return 0;
+    var left = 0;
+    var right = values.length - 1;
+    while (left <= right) {
+      var pivot = values[Math.floor((left + right) / 2)];
+      var lt = left;
+      var i = left;
+      var gt = right;
+      while (i <= gt) {
+        if (values[i] < pivot) {
+          swapNumbers(values, lt, i);
+          lt++;
+          i++;
+        } else if (values[i] > pivot) {
+          swapNumbers(values, i, gt);
+          gt--;
+        } else {
+          i++;
+        }
+      }
+      if (k < lt) right = lt - 1;
+      else if (k > gt) left = gt + 1;
+      else return pivot;
+    }
+    return values[k] || 0;
+  }
+
+  function swapNumbers(values, a, b) {
+    var tmp = values[a];
+    values[a] = values[b];
+    values[b] = tmp;
   }
 
   function finalize(items) {
@@ -106,8 +146,8 @@
   function scorePremium(items) {
     var candidates = items.filter(function (p) { return p.price > 0 && p.rating >= 4.0 && p.reviewCount >= 5; });
     if (candidates.length === 0) return [];
-    var revCounts = candidates.map(function (p) { return p.reviewCount; }).sort(function (a, b) { return a - b; });
-    var median = revCounts[Math.floor(revCounts.length / 2)] || 1;
+    var revCounts = candidates.map(function (p) { return p.reviewCount; });
+    var median = selectNumber(revCounts, Math.floor(revCounts.length / 2)) || 1;
     candidates = candidates.filter(function (p) { return p.reviewCount <= median; });
     if (candidates.length === 0) return [];
     // Price rank: higher price = higher rank (0 to 1)
@@ -135,11 +175,11 @@
     items.forEach(function (p) { totalWR += p.rating * p.reviewCount; totalR += p.reviewCount; });
     var C = totalR > 0 ? totalWR / totalR : 0;
 
-    var counts = items.map(function (p) { return p.reviewCount; }).sort(function (a, b) { return a - b; });
-    var m = Math.max(counts[Math.floor(counts.length * 0.25)] || 1, 50);
+    var counts = items.map(function (p) { return p.reviewCount; });
+    var m = Math.max(selectNumber(counts.slice(), Math.floor(counts.length * 0.25)) || 1, 50);
 
     // Saturation cap: 75th percentile — beyond this, more reviews give diminishing returns
-    var satCap = Math.max(counts[Math.floor(counts.length * 0.75)] || 100, 100);
+    var satCap = Math.max(selectNumber(counts, Math.floor(counts.length * 0.75)) || 100, 100);
 
     items.forEach(function (p) {
       var v = p.reviewCount;
@@ -221,14 +261,19 @@
   }
 
   function scoreWithMode(mode) {
-    var items = deduplicateVariants(cloneProducts(rawProducts));
+    if (scoreCache[mode]) return scoreCache[mode];
+    var items = cloneProducts(rawProducts);
+    if (!variantsAlreadyDeduped) items = deduplicateVariants(items);
+    var scored;
     switch (mode) {
-      case 'popular': return scorePopular(items);
-      case 'value':   return scoreValue(items);
-      case 'premium': return scorePremium(items);
-      case 'quality': return scoreTrueQuality(items);
-      default:        return scoreBayesian(items);
+      case 'popular': scored = scorePopular(items); break;
+      case 'value':   scored = scoreValue(items); break;
+      case 'premium': scored = scorePremium(items); break;
+      case 'quality': scored = scoreTrueQuality(items); break;
+      default:        scored = scoreBayesian(items); break;
     }
+    scoreCache[mode] = scored;
+    return scored;
   }
 
   // ===================== UI HELPERS =====================
@@ -360,7 +405,6 @@
     else if (s === 'price-asc') items.sort(function (a, b) { return (a.price || 9999) - (b.price || 9999); });
     else if (s === 'price-desc') items.sort(function (a, b) { return (b.price || 0) - (a.price || 0); });
     else if (s === 'discount') items.sort(function (a, b) { return b.discount - a.discount; });
-    else items.sort(function (a, b) { return b.bayesScore - a.bayesScore; });
 
     renderGrid(items);
   }
@@ -424,9 +468,16 @@
     rawProducts = data.rawProducts || data.scored;
     amazonUrl = data.url || '';
     statsData = data;
+    scoreCache = {};
+    variantsAlreadyDeduped = data.variantDeduped === true;
 
-    // Initial scoring with default mode
-    allScored = scoreWithMode('bayesian');
+    // Initial scoring with default mode; reuse stored scored data from older payloads.
+    if (data.scored && data.scored.length > 0) {
+      scoreCache.bayesian = data.scored;
+      allScored = data.scored;
+    } else {
+      allScored = scoreWithMode('bayesian');
+    }
     updateSubtitle();
 
     // Stats bar
