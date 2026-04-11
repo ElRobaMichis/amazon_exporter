@@ -540,9 +540,40 @@
         var RELATED_PAGES_PER_KEYWORD = 5; // Pages per keyword (first 5 pages have highest yield)
         var RELATED_SORTS_PER_KEYWORD = 3; // Only use top 3 sorts for related (default, reviews, price-asc)
         var relatedSorts = sortOrders.length >= 3 ? sortOrders.slice(0, 3) : sortOrders;
+
+        // Tokenize a keyword: lowercase, strip diacritics, drop stopwords and short tokens.
+        // Amazon's text-reformulation-widget often returns CROSS-SELL suggestions (e.g.
+        // for "pasta dental" it proposes "shampoo", "papel higienico", "jabon de baño"),
+        // not refinements. Without filtering, those pull 1800+ irrelevant products into
+        // the extraction. We keep only related keywords that share a meaningful token
+        // with the original search query.
+        var STOPWORDS = { 'de':1,'la':1,'el':1,'los':1,'las':1,'para':1,'con':1,'sin':1,
+          'en':1,'del':1,'un':1,'una':1,'mi':1,'tu':1,'es':1,'por':1,'al':1,'lo':1,
+          'the':1,'of':1,'for':1,'with':1,'without':1,'in':1,'and':1,'or':1,'from':1,
+          'to':1,'on':1,'at':1,'by':1,'is':1,'it':1 };
+        function tokenizeKw(kw) {
+          if (!kw) return [];
+          return kw.toLowerCase()
+            .normalize('NFD').replace(/[\u0300-\u036f]/g, '') // strip diacritics
+            .split(/[\s\-,+]+/)
+            // Min length 2 to keep legitimate short tokens like "tv", "pc", "4k", "5g";
+            // the STOPWORDS list catches 2-char noise (de, la, el, en, al, etc.)
+            .filter(function(t) { return t.length >= 2 && !STOPWORDS[t]; });
+        }
+        var originalTokens = tokenizeKw(searchKeyword);
+        function sharesTokenWithOriginal(rk) {
+          if (originalTokens.length === 0) return true; // no tokens to compare — keep all
+          var relTokens = tokenizeKw(rk);
+          for (var i = 0; i < relTokens.length; i++) {
+            if (originalTokens.indexOf(relTokens[i]) !== -1) return true;
+          }
+          return false;
+        }
+
         var reformWidget = document.querySelector('[data-component-type="text-reformulation-widget"]');
         if (reformWidget) {
           var relatedKeywords = [];
+          var droppedCrossSell = [];
           var seenKeywords = {};
           reformWidget.querySelectorAll('a').forEach(function(a) {
             var href = a.getAttribute('href') || '';
@@ -551,13 +582,21 @@
               try {
                 var rk = decodeURIComponent(kwMatch[1]);
                 // Skip if same as original keyword or already seen
-                if (rk && rk !== searchKeyword && !seenKeywords[rk] && relatedKeywords.length < RELATED_KEYWORD_CAP) {
+                if (rk && rk !== searchKeyword && !seenKeywords[rk]) {
                   seenKeywords[rk] = true;
-                  relatedKeywords.push(rk);
+                  // Only keep if it shares at least one meaningful token with original
+                  if (sharesTokenWithOriginal(rk)) {
+                    if (relatedKeywords.length < RELATED_KEYWORD_CAP) relatedKeywords.push(rk);
+                  } else {
+                    droppedCrossSell.push(rk);
+                  }
                 }
               } catch(e) {}
             }
           });
+          if (droppedCrossSell.length > 0) {
+            console.log('[BayesScore] Dropped ' + droppedCrossSell.length + ' cross-sell related keywords (no token overlap with "' + searchKeyword + '"):', droppedCrossSell.join(', '));
+          }
           if (relatedKeywords.length > 0) {
             console.log('[BayesScore] Related keywords:', relatedKeywords.join(', '));
             relatedKeywords.forEach(function(rk) {
