@@ -1105,4 +1105,62 @@ Round 27 baseline:  1627ms median / 100 pages  (61 pps)
 Round 28 current:   1353ms median / 100 pages  (74 pps)  -16.8% wall, +21% pps
 ```
 
-## Total theories tested: 228 | Implemented: 78 | Discarded with data: 150
+## Round 29 — Architectural findings, no shipped changes
+
+### Background: the "3.5x worker speedup" that turned out to be silent 503s
+Initial benchmark showed Web Worker fetches at 431ms median vs main-thread fetches at
+1531ms median — a potential 3.5x speedup. Spent hours validating and found the fast
+worker runs were **silent 503 failures**: Amazon's 1669-byte error pages downloaded in
+~100ms, and the `counts.reduce` was summing zero products from those "fast" runs.
+
+### What IS real: separate rate-limit buckets
+
+CONFIRMED via three independent states observed across benchmark sessions:
+```
+State A: main=200 / worker=200   (normal)
+State B: main=503 / worker=200   (main rate-limited, worker free)
+State C: main=200 / worker=503   (worker rate-limited, main recovered)
+```
+
+This proves Amazon's CDN/WAF assigns independent rate-limit budgets to main thread
+and Web Worker fetch contexts. They do NOT share a rate-limit bucket.
+
+Further finding: **`fetch()` inside worker** and **`XMLHttpRequest` inside worker**
+also have separate buckets. One can be 503 while the other is 200.
+
+### Why it doesn't help
+
+Despite separate rate-limit buckets, the worker context:
+- Has a small budget (~100-200 requests before triggering rate limit)
+- Has a very long cooldown (2+ hours observed)
+- Makes it impossible to sustain parallel main+worker extraction for 1572+ request jobs
+
+Attempted `parallel 100 main + 100 worker = 200 reqs` extraction:
+- First 1-2 runs: worker succeeds, total time ~2000ms for 200 reqs (seems faster)
+- After 200-300 worker requests: worker starts silently returning 503
+- Wall-clock time stays ~1400-1500ms but only 100 reqs actually succeed (main only)
+- Result: no real sustained throughput improvement
+
+### Discarded this round
+
+| Theory | Result | Why Discarded |
+|---|---|---|
+| Worker fetch 3.5x speedup | Silent 503 in fast runs | Measurement artifact |
+| Parallel main + worker throughput doubling | Worker budget too small (~100-200 reqs) | Dies mid-extraction |
+| Worker XHR as fallback after worker fetch dies | XHR also gets rate-limited after similar burst | Same budget problem |
+| iframe.contentWindow.fetch() from about:blank | Returns error pages (null origin, CORS) | Doesn't work |
+| Fresh worker instances (new Worker per batch) | Share worker-context rate limit pool | Not per-instance |
+| Background service worker delegation | 1.8MB structured-clone message cost | Negates benefit |
+
+### Round 29 outcome: no code changes
+Round 28 (blob parser, 1497ms avg / 100 pages / 74 pps) remains the shipped baseline.
+The separate rate-limit finding is documented here for future reference but is not
+actionable due to budget/cooldown constraints.
+
+## Round 30 — Direct JSON extraction + smarter discovery (pending)
+Round 30 exploration will focus on parsing productos directly from the JSON chunk
+objects (each `data-main-slot:search-result-N` chunk exposes asin/index/data fields
+alongside html) to skip the HTML regex step entirely, and saving initial pagination
+detection fetches by reading the current search page's DOM instead.
+
+## Total theories tested: 234 | Implemented: 78 | Discarded with data: 156
