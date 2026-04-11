@@ -36,13 +36,17 @@ document.addEventListener('DOMContentLoaded', () => {
         detectedInfo.innerHTML = '<strong>—</strong> (not on Amazon)';
         return;
       }
-      // Inject scripts first to ensure content.js is loaded
+      // Try direct message first, inject only if needed
+      let response;
       try {
-        await chrome.scripting.executeScript({ target: { tabId: tab.id }, files: ['lib/parser.js'] });
-        await chrome.scripting.executeScript({ target: { tabId: tab.id }, files: ['content.js'] });
-        await new Promise(r => setTimeout(r, 200));
-      } catch (e) { /* may already be injected */ }
-      const response = await chrome.tabs.sendMessage(tab.id, { action: 'detectPages' });
+        response = await chrome.tabs.sendMessage(tab.id, { action: 'detectPages' });
+      } catch (e) {
+        try {
+          await chrome.scripting.executeScript({ target: { tabId: tab.id }, files: ['lib/parser.js', 'content.js'] });
+          await new Promise(r => setTimeout(r, 100));
+          response = await chrome.tabs.sendMessage(tab.id, { action: 'detectPages' });
+        } catch (e2) { /* injection failed */ }
+      }
       if (response && response.pages > 0) {
         detectedPages = response.pages;
         detectedInfo.innerHTML = 'Detected: <strong>' + detectedPages + '</strong> pages';
@@ -160,19 +164,19 @@ document.addEventListener('DOMContentLoaded', () => {
       maxPrice: parseFloat(maxPrice.value) || 0
     };
 
-    // Always inject scripts first (idempotent — safe to re-inject)
+    // Try sending directly first (scripts already loaded via manifest content_scripts)
     try {
-      await chrome.scripting.executeScript({
-        target: { tabId: tab.id },
-        files: ['lib/parser.js']
-      });
-      await chrome.scripting.executeScript({
-        target: { tabId: tab.id },
-        files: ['content.js']
-      });
-      // Small delay to let scripts initialize
-      await new Promise(r => setTimeout(r, 300));
-      await chrome.tabs.sendMessage(tab.id, { action: 'triggerExtract', options: extractOptions });
+      try {
+        await chrome.tabs.sendMessage(tab.id, { action: 'triggerExtract', options: extractOptions });
+      } catch (msgErr) {
+        // Content script not loaded — inject and retry
+        await chrome.scripting.executeScript({
+          target: { tabId: tab.id },
+          files: ['lib/parser.js', 'content.js']
+        });
+        await new Promise(r => setTimeout(r, 100));
+        await chrome.tabs.sendMessage(tab.id, { action: 'triggerExtract', options: extractOptions });
+      }
     } catch (e) {
       setExtracting(false);
       setStatus('Error: ' + e.message, 'error');
