@@ -37,6 +37,8 @@
 
   async function prefetchDiscovery() {
     prefetchInProgress = true;
+    // Enable desktop UA for /dp/ fetches so mobile browsers get breadcrumb HTML
+    try { await chrome.runtime.sendMessage({ action: 'enableDesktopUA' }); } catch(e) {}
     try {
       var origin = window.location.origin;
       var hostname = window.location.hostname;
@@ -49,7 +51,10 @@
       for (var i = 0; i < domResults.length && sampleAsins.length < DEPTH_SAMPLE_SIZE; i++) {
         var asin = domResults[i].getAttribute('data-asin');
         if (!asin || asin.length !== 10) continue;
-        var sponsored = (domResults[i].textContent || '').indexOf('Patrocinado') !== -1
+        // Skip sponsored: check text content + AdHolder class (mobile carousel placeholders are
+        // empty divs with AdHolder class whose "Patrocinado" text lives in a separate widget)
+        var isAdHolder = (domResults[i].className || '').indexOf('AdHolder') !== -1;
+        var sponsored = isAdHolder || (domResults[i].textContent || '').indexOf('Patrocinado') !== -1
           || (domResults[i].textContent || '').indexOf('Sponsored') !== -1;
         if (!sponsored) sampleAsins.push(asin);
       }
@@ -72,8 +77,9 @@
               if (chunk.done) return parts.join('');
               var decoded = decoder.decode(chunk.value, { stream: true });
               parts.push(decoded);
-              var boundary = prevTail.substring(prevTail.length - 22) + decoded;
-              if (boundary.indexOf('wayfinding-breadcrumbs') !== -1) { reader.cancel(); return parts.join(''); }
+              var boundary = prevTail.substring(prevTail.length - 26) + decoded;
+              if (boundary.indexOf('wayfinding-breadcrumbs') !== -1 || boundary.indexOf('breadcrumb_feature_div') !== -1) { reader.cancel(); return parts.join(''); }
+              if (parts.reduce(function(s,p){return s+p.length;},0) > 2500000) { reader.cancel(); return parts.join(''); }
               prevTail = decoded;
               return read();
             });
@@ -132,11 +138,21 @@
   }
 
   function detectMaxPages() {
+    // Desktop: numbered .s-pagination-item elements
     var items = document.querySelectorAll('.s-pagination-item');
     var max = 0;
     for (var i = 0; i < items.length; i++) {
       var n = parseInt(items[i].textContent.trim().replace(/[.,\s]/g, ''), 10);
       if (!isNaN(n) && n > max) max = n;
+    }
+    if (max > 0) return max;
+    // Mobile fallback: Amazon uses a-pagination with prev/next links instead of numbered pages.
+    // Extract the highest page= value from those links.
+    var pageLinks = document.querySelectorAll('.a-pagination a[href*="page="], a[href*="page="]');
+    for (var j = 0; j < pageLinks.length; j++) {
+      var href = pageLinks[j].getAttribute('href') || '';
+      var pm = href.match(/[?&]page=(\d+)/);
+      if (pm) { var n2 = parseInt(pm[1], 10); if (n2 > max) max = n2; }
     }
     return max || 1;
   }
@@ -160,6 +176,9 @@
   async function startExtraction(options) {
     if (abortController) abortController.abort();
     abortController = new AbortController();
+
+    // Enable desktop UA on fetch requests so Amazon serves ~60 products/page instead of ~14 on mobile
+    try { await chrome.runtime.sendMessage({ action: 'enableDesktopUA' }); } catch(e) {}
 
     var pages = options.pages || 5;
     var multiQuery = options.multiQuery || false;
@@ -241,7 +260,8 @@
           htmls.push(html);
         }
         // Pagination strip (only ~3KB, needed for detectMaxPagesFromHtml)
-        else if (name.indexOf('data-main-slot') === 0 && html.indexOf('s-pagination-strip') !== -1) {
+        // Desktop uses s-pagination-strip; mobile uses a-pagination with progressive scroll
+        else if (name.indexOf('data-main-slot') === 0 && (html.indexOf('s-pagination-strip') !== -1 || html.indexOf('a-pagination') !== -1)) {
           htmls.push(html);
         }
       } catch (e) { /* skip malformed chunk */ }
@@ -303,6 +323,10 @@
         var html;
         if (abortMarker) {
           // Stream abort mode: for product pages where we only need a small fraction
+          // abortMarker can be a string or array of strings (desktop + mobile markers)
+          var markers = typeof abortMarker === 'string' ? [abortMarker] : abortMarker;
+          var tailLen = 0;
+          for (var mi = 0; mi < markers.length; mi++) if (markers[mi].length > tailLen) tailLen = markers[mi].length;
           var reader = r.body.getReader();
           var decoder = new TextDecoder();
           var parts = [];
@@ -314,8 +338,10 @@
             var decoded = decoder.decode(chunk.value, { stream: true });
             parts.push(decoded);
             totalLen += decoded.length;
-            var boundary = prevTail.substring(prevTail.length - abortMarker.length) + decoded;
-            if (boundary.indexOf(abortMarker) !== -1 || totalLen > 1700000) {
+            var boundary = prevTail.substring(prevTail.length - tailLen) + decoded;
+            var found = false;
+            for (var mi2 = 0; mi2 < markers.length; mi2++) if (boundary.indexOf(markers[mi2]) !== -1) { found = true; break; }
+            if (found || totalLen > 2500000) {
               reader.cancel();
               break;
             }
@@ -416,7 +442,7 @@
 
           await Promise.all(sampleAsins.map(async function(asin) {
             if (abortController.signal.aborted || captchaHit) return;
-            var html = await fetchHtml(origin + '/dp/' + asin, MAX_RETRIES, 'wayfinding-breadcrumbs');
+            var html = await fetchHtml(origin + '/dp/' + asin, MAX_RETRIES, ['wayfinding-breadcrumbs', 'breadcrumb_feature_div']);
             discoveryDone++;
             broadcast({ phase: 'discovery', completed: discoveryDone, total: sampleAsins.length });
             if (html) {

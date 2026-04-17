@@ -7,7 +7,8 @@
     "activeTab",
     "storage",
     "unlimitedStorage",
-    "scripting"
+    "scripting",
+    "declarativeNetRequest"
   ],
   "host_permissions": [
     "*://*.amazon.com/*",
