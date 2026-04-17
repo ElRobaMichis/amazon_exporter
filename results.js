@@ -305,85 +305,268 @@
 
   // ===================== RENDER =====================
 
-  function renderGrid(items) {
-    var grid = document.getElementById('grid');
-    grid.innerHTML = '';
-    var domain = 'https://www.amazon.com';
-    try { domain = (new URL(amazonUrl)).origin; } catch (e) { /* keep default */ }
+  var TRUST_SVG = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 1l5 2v4.5c0 3-2 5.5-5 6.5-3-1-5-3.5-5-6.5V3l5-2z"/><path d="M5.5 8l2 2 3-4"/></svg>';
 
-    var scaleMax = (currentMode === 'bayesian' || currentMode === 'popular' || currentMode === 'quality') ? 5 : (items.length > 0 ? items[0].bayesScore : 5);
+  function getDomain() {
+    try { return (new URL(amazonUrl)).origin; } catch (e) { return 'https://www.amazon.com'; }
+  }
+
+  function buildStars(rating) {
+    var full = Math.floor(rating);
+    var half = (rating - full) >= 0.3;
+    var s = '';
+    for (var j = 0; j < full; j++) s += '\u2605';
+    if (half) s += '\u00bd';
+    for (var k = full + (half ? 1 : 0); k < 5; k++) s += '\u2606';
+    return s;
+  }
+
+  function getBadgeClass(badge) {
+    if (!badge) return 'generic';
+    var bl = badge.toLowerCase();
+    if (bl.indexOf('best seller') !== -1 || bl.indexOf('bestseller') !== -1) return 'bestseller';
+    if (bl.indexOf('choice') !== -1) return 'choice';
+    return 'generic';
+  }
+
+  function buildCardContext(p, scaleMax) {
+    return {
+      rc: p.rank <= 3 ? 'r' + p.rank : 'rn',
+      sc: p.bayesScore >= 4.5 ? 'sc-e' : p.bayesScore >= 4.0 ? 'sc-g' : p.bayesScore >= 3.5 ? 'sc-a' : 'sc-p',
+      cur: CURR[p.currency] || '$',
+      scorePercent: Math.min(100, Math.round((p.bayesScore / scaleMax) * 100)),
+      stars: buildStars(p.rating),
+      badgeClass: getBadgeClass(p.badge),
+      confClass: p.confidence >= 80 ? 'conf-high' : p.confidence >= 50 ? 'conf-med' : 'conf-low',
+      trusted: p.confidence >= 80
+    };
+  }
+
+  function attachClick(el, p, domain) {
+    el.onclick = (function (url) {
+      return function () { window.open(domain + url, '_blank'); };
+    })(p.productUrl);
+  }
+
+  function buildHeroCard(p, domain, scaleMax) {
+    var ctx = buildCardContext(p, scaleMax);
+    var card = document.createElement('div');
+    card.className = 'hero-card' + (ctx.trusted ? ' is-trusted' : '');
+    var html = '';
+
+    html += '<div class="hero-img-wrap">';
+    if (p.imageUrl) html += '<img class="hero-img" src="' + esc(p.imageUrl) + '" loading="lazy" alt="">';
+    html += '</div>';
+
+    html += '<div class="hero-info">';
+    html += '<div>';
+    html += '<div class="hero-top">';
+    html += '<span class="rank-badge ' + ctx.rc + '">#' + p.rank + '</span>';
+    if (ctx.trusted) html += '<span class="trust-pill">' + TRUST_SVG + 'Trusted</span>';
+    if (p.badge) html += '<span class="badge-tag badge-' + ctx.badgeClass + '">' + esc(p.badge) + '</span>';
+    html += '</div>';
+    html += '<div class="hero-title">' + esc(p.title) + '</div>';
+    html += '<div class="hero-rating">';
+    html += '<span class="rating-stars">' + ctx.stars + '</span>';
+    html += '<span class="rating-num">' + p.rating + '</span>';
+    html += '<span class="meta-sep">\u00b7</span>';
+    html += '<span>' + fmtNum(p.reviewCount) + ' reviews</span>';
+    html += '</div>';
+    if (p.boughtCount > 0) {
+      html += '<div class="hero-bought">' + fmtNum(p.boughtCount) + '+ bought this month</div>';
+    }
+    html += '</div>';
+
+    html += '<div class="hero-price-row">';
+    html += '<span class="hero-price">' + (p.price > 0 ? ctx.cur + p.price.toFixed(2) : '\u2014') + '</span>';
+    if (p.listPrice > 0 && p.listPrice > p.price) {
+      html += '<span class="hero-list-price">' + ctx.cur + p.listPrice.toFixed(2) + '</span>';
+    }
+    if (p.discount > 0) {
+      html += '<span class="hero-discount">-' + p.discount + '%</span>';
+    }
+    html += '</div>';
+    html += '</div>';
+
+    html += '<div class="hero-score-panel">';
+    html += '<div class="metric-block">';
+    html += '<span class="metric-label">BayesScore</span>';
+    html += '<span class="metric-value ' + ctx.sc + '">' + p.bayesScore.toFixed(2) + '</span>';
+    html += '<div class="metric-bar"><div class="metric-bar-fill ' + ctx.sc + '" style="width:' + ctx.scorePercent + '%"></div></div>';
+    html += '</div>';
+    html += '<div class="metric-block">';
+    html += '<span class="metric-label">Confidence</span>';
+    html += '<span class="metric-value ' + ctx.confClass + '">' + p.confidence + '<span class="metric-unit">%</span></span>';
+    html += '<div class="metric-bar"><div class="metric-bar-fill ' + ctx.confClass + '" style="width:' + p.confidence + '%"></div></div>';
+    html += '</div>';
+    html += '</div>';
+
+    card.innerHTML = html;
+    attachClick(card, p, domain);
+    return card;
+  }
+
+  function buildGalleryCard(p, domain, scaleMax) {
+    var ctx = buildCardContext(p, scaleMax);
+    var card = document.createElement('div');
+    card.className = 'gallery-card' + (ctx.trusted ? ' is-trusted' : '');
+    var html = '';
+
+    html += '<div class="gallery-top">';
+    html += '<div class="gallery-top-left">';
+    html += '<span class="rank-badge ' + ctx.rc + '">#' + p.rank + '</span>';
+    if (ctx.trusted) html += '<span class="trust-pill">' + TRUST_SVG + 'Trusted</span>';
+    html += '</div>';
+    html += '<span class="gallery-score-chip ' + ctx.sc + '">' + p.bayesScore.toFixed(2) + '</span>';
+    html += '</div>';
+
+    html += '<div class="gallery-img-wrap">';
+    if (p.imageUrl) html += '<img class="gallery-img" src="' + esc(p.imageUrl) + '" loading="lazy" alt="">';
+    html += '</div>';
+
+    html += '<div class="gallery-body">';
+    html += '<div class="gallery-title">' + esc(p.title) + '</div>';
+    html += '<div class="gallery-rating">';
+    html += '<span class="rating-stars">' + ctx.stars + '</span>';
+    html += '<span>' + p.rating + '</span>';
+    html += '<span class="meta-sep">\u00b7</span>';
+    html += '<span>' + fmtNum(p.reviewCount) + '</span>';
+    html += '</div>';
+    if (p.badge) {
+      html += '<div class="gallery-tags"><span class="badge-tag badge-' + ctx.badgeClass + '">' + esc(p.badge) + '</span></div>';
+    }
+    html += '</div>';
+
+    html += '<div class="gallery-footer">';
+    html += '<div class="gallery-price-alt">';
+    html += '<span class="gallery-price">' + (p.price > 0 ? ctx.cur + p.price.toFixed(2) : '\u2014') + '</span>';
+    if (p.listPrice > 0 && p.listPrice > p.price) {
+      html += '<span class="gallery-list-price">' + ctx.cur + p.listPrice.toFixed(2) + '</span>';
+    }
+    if (p.discount > 0) {
+      html += '<span class="gallery-discount">-' + p.discount + '%</span>';
+    }
+    html += '</div>';
+    html += '<span class="gallery-conf ' + ctx.confClass + '">';
+    if (ctx.trusted) html += TRUST_SVG;
+    html += p.confidence + '%</span>';
+    html += '</div>';
+
+    card.innerHTML = html;
+    attachClick(card, p, domain);
+    return card;
+  }
+
+  function buildCompactCard(p, domain, scaleMax) {
+    var ctx = buildCardContext(p, scaleMax);
+    var card = document.createElement('div');
+    card.className = 'card' + (ctx.trusted ? ' is-trusted' : '');
+    var html = '';
+
+    html += '<div class="card-side">';
+    if (p.imageUrl) html += '<img class="card-img" src="' + esc(p.imageUrl) + '" loading="lazy" alt="">';
+    html += '</div>';
+
+    html += '<div class="card-main">';
+    html += '<div class="card-top">';
+    html += '<span class="rank-badge ' + ctx.rc + '">#' + p.rank + '</span>';
+    if (ctx.trusted) html += '<span class="trust-pill">' + TRUST_SVG + 'Trusted</span>';
+    html += '</div>';
+    html += '<div class="card-title">' + esc(p.title) + '</div>';
+    html += '<div class="card-meta-row">';
+    html += '<span class="rating-stars">' + ctx.stars + '</span>';
+    html += '<span>' + p.rating + '</span>';
+    html += '<span class="meta-sep">\u00b7</span>';
+    html += '<span>' + fmtNum(p.reviewCount) + '</span>';
+    if (p.boughtCount > 0) {
+      html += '<span class="meta-sep">\u00b7</span>';
+      html += '<span class="card-bought">' + fmtNum(p.boughtCount) + '+ bought</span>';
+    }
+    html += '</div>';
+    if (p.badge) {
+      html += '<div class="gallery-tags"><span class="badge-tag badge-' + ctx.badgeClass + '">' + esc(p.badge) + '</span></div>';
+    }
+    html += '<div class="card-foot">';
+    html += '<div class="card-price-block">';
+    html += '<span class="card-price">' + (p.price > 0 ? ctx.cur + p.price.toFixed(2) : '\u2014') + '</span>';
+    if (p.listPrice > 0 && p.listPrice > p.price) {
+      html += '<span class="card-list-price">' + ctx.cur + p.listPrice.toFixed(2) + '</span>';
+    }
+    if (p.discount > 0) {
+      html += '<span class="card-discount">-' + p.discount + '%</span>';
+    }
+    html += '</div>';
+    html += '<div class="card-score-block">';
+    html += '<span class="card-conf ' + ctx.confClass + '">';
+    if (ctx.trusted) html += TRUST_SVG;
+    html += p.confidence + '%</span>';
+    html += '<span class="card-score-chip ' + ctx.sc + '">' + p.bayesScore.toFixed(2) + '</span>';
+    html += '</div>';
+    html += '</div>';
+    html += '</div>';
+
+    card.innerHTML = html;
+    attachClick(card, p, domain);
+    return card;
+  }
+
+  function renderGrid(items) {
+    var heroEl = document.getElementById('top5-hero');
+    var galleryEl = document.getElementById('top5-gallery');
+    var grid = document.getElementById('grid');
+    var top5Section = document.getElementById('top5-section');
+    var restSection = document.getElementById('rest-section');
+    var top5Sub = document.getElementById('top5-sub');
+    var restCount = document.getElementById('rest-count');
+    var emptyEl = document.getElementById('empty-state');
+
+    heroEl.innerHTML = '';
+    galleryEl.innerHTML = '';
+    grid.innerHTML = '';
+
+    if (!items || items.length === 0) {
+      top5Section.style.display = 'none';
+      restSection.style.display = 'none';
+      if (emptyEl) emptyEl.style.display = 'block';
+      return;
+    }
+
+    if (emptyEl) emptyEl.style.display = 'none';
+
+    var domain = getDomain();
+    var scaleMax = (currentMode === 'bayesian' || currentMode === 'popular' || currentMode === 'quality') ? 5 : items[0].bayesScore;
     if (scaleMax === 0) scaleMax = 1;
 
-    for (var i = 0; i < items.length && i < 300; i++) {
-      var p = items[i];
-      var rc = p.rank <= 3 ? 'r' + p.rank : 'rn';
-      var sc = p.bayesScore >= 4.5 ? 'sc-e' : p.bayesScore >= 4.0 ? 'sc-g' : p.bayesScore >= 3.5 ? 'sc-a' : 'sc-p';
-      var cur = CURR[p.currency] || '$';
-      var scorePercent = Math.min(100, Math.round((p.bayesScore / scaleMax) * 100));
+    // Hero (#1)
+    heroEl.appendChild(buildHeroCard(items[0], domain, scaleMax));
 
-      var full = Math.floor(p.rating);
-      var half = (p.rating - full) >= 0.3;
-      var stars = '';
-      for (var j = 0; j < full; j++) stars += '\u2605';
-      if (half) stars += '\u00bd';
-      for (var k = full + (half ? 1 : 0); k < 5; k++) stars += '\u2606';
+    // Gallery (#2-5)
+    var galleryCount = 0;
+    for (var i = 1; i < 5 && i < items.length; i++) {
+      galleryEl.appendChild(buildGalleryCard(items[i], domain, scaleMax));
+      galleryCount++;
+    }
 
-      var badgeClass = 'generic';
-      if (p.badge) {
-        var bl = p.badge.toLowerCase();
-        if (bl.indexOf('best seller') !== -1 || bl.indexOf('bestseller') !== -1) badgeClass = 'bestseller';
-        else if (bl.indexOf('choice') !== -1) badgeClass = 'choice';
-      }
+    top5Section.style.display = 'block';
+    if (top5Sub) {
+      var shown = galleryCount + 1;
+      top5Sub.textContent = shown === 1
+        ? 'The highest-scoring product'
+        : 'The ' + shown + ' highest-scoring products';
+    }
 
-      var card = document.createElement('div');
-      card.className = 'card' + (p.rank <= 3 ? ' top3' : '');
+    // Rest (#6+)
+    var restN = 0;
+    for (var j = 5; j < items.length && j < 300; j++) {
+      grid.appendChild(buildCompactCard(items[j], domain, scaleMax));
+      restN++;
+    }
 
-      var html = '';
-
-      // Card header: rank tag + title
-      html += '<div class="card-header">';
-      html += '<span class="card-rank ' + rc + '">' + p.rank + '</span>';
-      html += '<div class="card-title">' + esc(p.title) + '</div>';
-      html += '</div>';
-
-      // Card body: image + meta
-      html += '<div class="card-body">';
-      if (p.imageUrl) {
-        html += '<img class="card-img" src="' + esc(p.imageUrl) + '" loading="lazy">';
-      }
-      html += '<div class="card-meta">';
-      html += '<div class="card-rating"><span class="stars">' + stars + '</span> ' + p.rating + ' <span class="meta-sep">&middot;</span> ' + fmtNum(p.reviewCount) + ' reviews</div>';
-      if (p.boughtCount > 0) {
-        html += '<div class="card-bought">' + fmtNum(p.boughtCount) + '+ bought this month</div>';
-      }
-      html += '<div class="card-tags">';
-      if (p.badge) html += '<span class="badge-tag badge-' + badgeClass + '">' + esc(p.badge) + '</span>';
-      html += '</div>';
-      html += '</div></div>';
-
-      // Card bottom: price + score with bar
-      html += '<div class="card-bottom">';
-      html += '<div class="card-price-area">';
-      html += '<span class="card-price">' + (p.price > 0 ? cur + p.price.toFixed(2) : '\u2014') + '</span>';
-      if (p.listPrice > 0 && p.listPrice > p.price) {
-        html += '<span class="card-list-price">' + cur + p.listPrice.toFixed(2) + '</span>';
-      }
-      if (p.discount > 0) {
-        html += '<span class="card-discount">-' + p.discount + '%</span>';
-      }
-      html += '</div>';
-      html += '<div class="card-score-area">';
-      html += '<div class="card-score-top"><span class="score-label">SCORE</span><span class="score-num ' + sc + '">' + p.bayesScore.toFixed(2) + '</span></div>';
-      html += '<div class="score-bar"><div class="score-bar-fill ' + sc + '" style="width:' + scorePercent + '%"></div></div>';
-      html += '<div class="score-conf">' + p.confidence + '% confidence</div>';
-      html += '</div>';
-      html += '</div>';
-
-      card.innerHTML = html;
-      card.onclick = (function (url) {
-        return function () { window.open(domain + url, '_blank'); };
-      })(p.productUrl);
-      grid.appendChild(card);
+    if (restN > 0) {
+      restSection.style.display = 'block';
+      if (restCount) restCount.textContent = fmtNum(restN) + ' more product' + (restN === 1 ? '' : 's');
+    } else {
+      restSection.style.display = 'none';
     }
   }
 
@@ -548,10 +731,9 @@
       (data.stats && data.stats.captchaHit ? '<span class="stat-pill error"><strong>!</strong> CAPTCHA</span>' : '') +
       '<span class="stat-pill"><strong>' + elapsed + '</strong></span>';
 
-    // Show mode bar, controls, and word filters
+    // Show mode bar and toolbar panel
     document.getElementById('mode-bar').style.display = 'flex';
-    document.getElementById('controls').style.display = 'flex';
-    document.getElementById('word-filters').style.display = 'flex';
+    document.getElementById('toolbar-panel').style.display = 'block';
 
     // Render initial grid
     renderGrid(allScored);

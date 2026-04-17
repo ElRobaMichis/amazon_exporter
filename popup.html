@@ -8,29 +8,35 @@
 </head>
 <body>
   <div class="popup">
-    <!-- Header -->
-    <div class="popup-header">
-      <div class="header-mark">B</div>
-      <div>
-        <h1>BayesScore</h1>
-        <p class="popup-subtitle">Amazon product analyzer</p>
+    <header class="popup-header">
+      <div class="brand">
+        <span class="brand-mark" aria-hidden="true">
+          <svg width="28" height="28" viewBox="0 0 28 28" fill="none" xmlns="http://www.w3.org/2000/svg">
+            <rect width="28" height="28" rx="8" fill="#4f46e5"/>
+            <g fill="#fff">
+              <rect x="6.8" y="14.5" width="3" height="7" rx="0.8"/>
+              <rect x="12.5" y="9" width="3" height="12.5" rx="0.8"/>
+              <rect x="18.2" y="17" width="3" height="4.5" rx="0.8"/>
+            </g>
+          </svg>
+        </span>
+        <span class="brand-name">BayesScore</span>
       </div>
-    </div>
+      <div id="status" class="status">
+        <span class="status-dot"></span>
+        <span id="status-text">Ready</span>
+      </div>
+    </header>
 
-    <!-- Status -->
-    <div id="status" class="status-indicator">
-      <span class="status-dot"></span>
-      <span id="status-text">Ready to extract</span>
-    </div>
-
-    <!-- Config -->
-    <div class="config-section">
-      <div class="config-group">
-        <span class="config-heading">Pages to extract</span>
-        <div class="mode-row">
+    <main class="popup-body">
+      <div class="field">
+        <div class="field-row">
+          <span class="field-label">Pages to extract</span>
+          <span id="detected-pages" class="field-meta">Detecting…</span>
+        </div>
+        <div class="segmented">
           <button id="modeAuto" class="mode-btn active">Auto</button>
           <button id="modeManual" class="mode-btn">Manual</button>
-          <span id="detected-pages" class="detected-info">Detecting...</span>
         </div>
         <div id="slider-container" class="slider-row hidden">
           <input type="range" id="pages" min="1" max="400" value="5" class="slider">
@@ -38,105 +44,154 @@
         </div>
       </div>
 
-      <div class="config-group">
-        <span class="config-heading">Options</span>
-        <label class="config-toggle">
+      <div class="toggles">
+        <label class="toggle" data-tone="indigo">
+          <span class="toggle-icon" aria-hidden="true">
+            <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round">
+              <rect x="2" y="2" width="6" height="6" rx="1.2"/>
+              <rect x="8" y="2" width="6" height="6" rx="1.2"/>
+              <rect x="2" y="8" width="6" height="6" rx="1.2"/>
+              <rect x="8" y="8" width="6" height="6" rx="1.2"/>
+            </svg>
+          </span>
+          <span class="toggle-text">
+            <span class="toggle-name">Multi-query</span>
+            <span class="toggle-hint">5 sort orders · 5× products</span>
+          </span>
           <input type="checkbox" id="multiQuery">
-          <span class="toggle-slider"></span>
-          <span class="toggle-label">
-            Multi-query mode
-            <small>5 sort orders × pages (5x products)</small>
-          </span>
+          <span class="toggle-sw"></span>
         </label>
 
-        <label class="config-toggle">
+        <label class="toggle" data-tone="violet">
+          <span class="toggle-icon" aria-hidden="true">
+            <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M8 2v12"/>
+              <path d="M8 6h4"/>
+              <path d="M8 10h4"/>
+              <circle cx="4" cy="2" r="1.2"/>
+              <circle cx="4" cy="14" r="1.2"/>
+              <circle cx="13" cy="6" r="1.2"/>
+              <circle cx="13" cy="10" r="1.2"/>
+            </svg>
+          </span>
+          <span class="toggle-text">
+            <span class="toggle-name">Depth analysis</span>
+            <span class="toggle-hint">Auto-discover categories</span>
+          </span>
           <input type="checkbox" id="depthAnalysis">
-          <span class="toggle-slider"></span>
-          <span class="toggle-label">
-            Depth analysis
-            <small>Auto-discover categories for deeper extraction</small>
-          </span>
+          <span class="toggle-sw"></span>
         </label>
 
-        <label class="config-toggle">
-          <input type="checkbox" id="filterSponsored" checked>
-          <span class="toggle-slider"></span>
-          <span class="toggle-label">
-            Hide sponsored
-            <small>Remove ads from ranking</small>
+        <label class="toggle" data-tone="amber">
+          <span class="toggle-icon" aria-hidden="true">
+            <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M2 8c2.3-3 4.3-4.5 6-4.5s3.7 1.5 6 4.5c-2.3 3-4.3 4.5-6 4.5S4.3 11 2 8z"/>
+              <circle cx="8" cy="8" r="2"/>
+              <path d="M3 3l10 10"/>
+            </svg>
           </span>
+          <span class="toggle-text">
+            <span class="toggle-name">Hide sponsored</span>
+          </span>
+          <input type="checkbox" id="filterSponsored" checked>
+          <span class="toggle-sw"></span>
         </label>
       </div>
 
-      <div class="config-group">
-        <span class="config-heading">Filters</span>
-        <div class="filter-row">
-          <label class="filter-field">
-            <span class="filter-label">Min Price</span>
-            <input type="number" id="minPrice" min="0" value="0" class="filter-input">
-          </label>
-          <label class="filter-field">
-            <span class="filter-label">Max Price</span>
+      <div class="filters">
+        <div class="filter-line">
+          <span class="filter-label">Price</span>
+          <div class="filter-field">
+            <span class="filter-prefix">$</span>
+            <input type="number" id="minPrice" min="0" value="0" placeholder="0" class="filter-input">
+          </div>
+          <span class="filter-sep">–</span>
+          <div class="filter-field">
+            <span class="filter-prefix">$</span>
             <input type="number" id="maxPrice" min="0" value="0" placeholder="∞" class="filter-input">
-          </label>
-          <label class="filter-field">
-            <span class="filter-label">Min Reviews</span>
-            <input type="number" id="minReviews" min="0" value="0" class="filter-input">
-          </label>
+          </div>
+        </div>
+        <div class="filter-line">
+          <span class="filter-label">Reviews ≥</span>
+          <div class="filter-field filter-field--wide">
+            <input type="number" id="minReviews" min="0" value="0" placeholder="0" class="filter-input filter-input--noprefix">
+          </div>
         </div>
       </div>
-    </div>
+    </main>
 
-    <!-- Progress -->
-    <div id="progress-section" class="progress-section hidden">
+    <div id="progress-section" class="progress hidden">
       <div class="progress-track">
         <div id="progress-bar" class="progress-fill"></div>
       </div>
-      <div class="progress-details">
-        <span id="progress-text" class="progress-text">Extracting...</span>
+      <div class="progress-meta">
+        <span id="progress-text" class="progress-text">Extracting…</span>
         <span id="progress-pct" class="progress-pct">0%</span>
       </div>
     </div>
 
-    <!-- Actions -->
-    <div class="popup-actions">
-      <button id="extractBtn" class="btn btn-extract">Extract Now</button>
+    <div class="actions">
+      <button id="extractBtn" class="btn btn-primary">
+        <span class="btn-label">Extract</span>
+        <span class="btn-arrow" aria-hidden="true">→</span>
+      </button>
       <button id="abortBtn" class="btn btn-stop hidden">Stop</button>
     </div>
 
-    <!-- Results summary -->
-    <div id="results-section" class="results-section hidden">
-      <div class="results-grid">
-        <div class="result-card">
-          <div id="res-products" class="result-num">&mdash;</div>
-          <div class="result-label">Products</div>
+    <section id="results-section" class="results hidden">
+      <div class="summary">
+        <div class="summary-cell">
+          <span id="res-products" class="summary-val">—</span>
+          <span class="summary-lbl">Products</span>
         </div>
-        <div class="result-card">
-          <div id="res-pages" class="result-num">&mdash;</div>
-          <div class="result-label">Pages</div>
+        <div class="summary-cell">
+          <span id="res-pages" class="summary-val">—</span>
+          <span class="summary-lbl">Pages</span>
         </div>
-        <div class="result-card">
-          <div id="res-time" class="result-num">&mdash;</div>
-          <div class="result-label">Time</div>
+        <div class="summary-cell">
+          <span id="res-time" class="summary-val">—</span>
+          <span class="summary-lbl">Time</span>
         </div>
-        <div class="result-card">
-          <div id="res-best" class="result-num">&mdash;</div>
-          <div class="result-label">Best Score</div>
+        <div class="summary-cell summary-cell--accent">
+          <span id="res-best" class="summary-val">—</span>
+          <span class="summary-lbl">Best</span>
         </div>
       </div>
 
       <div id="top5" class="top5"></div>
 
-      <div class="export-row">
-        <button id="exportCSV" class="btn btn-export">CSV</button>
-        <button id="exportJSON" class="btn btn-export">JSON</button>
-        <button id="showPanel" class="btn btn-export">Results Panel</button>
+      <div class="exports">
+        <button id="exportCSV" class="btn btn-ghost">
+          <span class="btn-ico" aria-hidden="true">
+            <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M3 10v2.5A1.5 1.5 0 0 0 4.5 14h7a1.5 1.5 0 0 0 1.5-1.5V10"/>
+              <path d="M8 10V3"/>
+              <path d="M5 7l3 3 3-3"/>
+            </svg>
+          </span>
+          CSV
+        </button>
+        <button id="exportJSON" class="btn btn-ghost">
+          <span class="btn-ico" aria-hidden="true">
+            <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M3 10v2.5A1.5 1.5 0 0 0 4.5 14h7a1.5 1.5 0 0 0 1.5-1.5V10"/>
+              <path d="M8 10V3"/>
+              <path d="M5 7l3 3 3-3"/>
+            </svg>
+          </span>
+          JSON
+        </button>
+        <button id="showPanel" class="btn btn-ghost btn-ghost--accent">
+          <span class="btn-ico" aria-hidden="true">
+            <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round">
+              <rect x="2.5" y="3" width="11" height="10" rx="1.5"/>
+              <path d="M2.5 6h11"/>
+            </svg>
+          </span>
+          Panel
+        </button>
       </div>
-    </div>
-
-    <div class="popup-footer">
-      <span>Parser K &bull; H3/QUIC Parallel</span>
-    </div>
+    </section>
   </div>
 
   <script src="popup.js"></script>

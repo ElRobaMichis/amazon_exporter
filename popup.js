@@ -250,7 +250,7 @@ document.addEventListener('DOMContentLoaded', () => {
   // ---- Helpers ----
   function setStatus(text, type = '') {
     statusText.textContent = text;
-    statusBar.className = 'status-indicator' + (type ? ' ' + type : '');
+    statusBar.className = 'status' + (type ? ' ' + type : '');
   }
 
   function setExtracting(running) {
